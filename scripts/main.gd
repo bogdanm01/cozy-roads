@@ -2,24 +2,63 @@ extends Node3D
 
 const CarScript := preload("res://scripts/car.gd")
 const CameraScript := preload("res://scripts/follow_camera.gd")
+const MeshFactory := preload("res://scripts/low_poly_mesh.gd")
+const EndlessRoadScript := preload("res://scripts/endless_road.gd")
+const SAVE_PATH := "user://cozy_roads.cfg"
 
-const WHITE := Color("eeeeee")
-const LIGHT_GRAY := Color("aeb2b4")
-const MID_GRAY := Color("656a6d")
-const DARK_GRAY := Color("25282a")
-const BLACK := Color("0d0e0f")
+const WHITE := Color("d8dadb")
+const LIGHT_GRAY := Color("a8abad")
+const MID_GRAY := Color("777b7d")
+const DARK_GRAY := Color("45494b")
+const BLACK := Color("292c2e")
+const DINER_POSITION := Vector3(43.0, 0.0, -281.0)
 
 var player_car: CozyCar
+var endless_road: CozyEndlessRoad
 var telemetry_label: Label
+var scene_environment: Environment
+var white_reflector_material: StandardMaterial3D
+var amber_reflector_material: StandardMaterial3D
+var road_reflector_mesh: ArrayMesh
+var white_reflector_transforms: Array[Transform3D] = []
+var amber_reflector_transforms: Array[Transform3D] = []
+var scenic_route_points: Array[Vector3] = []
+var tree_trunk_material: StandardMaterial3D
+var tree_foliage_material: StandardMaterial3D
+var tree_foliage_dark_material: StandardMaterial3D
+var pine_positions: Array[Vector3] = []
+var pine_scales: Array[float] = []
+var pine_dark_flags: Array[bool] = []
+var guardrail_material: StandardMaterial3D
+var utility_wood_material: StandardMaterial3D
+var warm_window_material: StandardMaterial3D
+var trip_distance := 0.0
+var route_total_length := 0.0
+var last_car_position := Vector3.ZERO
+var diner_reached := false
+var route_finished := false
+var roadside_stamps := 0
+var best_distance := 0.0
+var audio_muted := false
+var reset_was_pressed := false
 
 
 func _ready() -> void:
+	_load_progress()
 	_build_environment()
 	_build_test_field()
 	player_car = CozyCar.new()
 	player_car.name = "PlayerCar"
-	player_car.position = Vector3(0.0, 0.0, 42.0)
+	player_car.position = Vector3(19.0, 0.0, -111.0)
 	add_child(player_car)
+	last_car_position = player_car.global_position
+
+	endless_road = EndlessRoadScript.new()
+	endless_road.name = "EndlessRoad"
+	endless_road.target = player_car
+	endless_road.start_point = scenic_route_points[-1]
+	endless_road.start_direction = (scenic_route_points[-1] - scenic_route_points[-2]).normalized()
+	add_child(endless_road)
 
 	var camera := CozyFollowCamera.new()
 	camera.name = "FollowCamera"
@@ -31,30 +70,176 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	if is_instance_valid(player_car) and is_instance_valid(telemetry_label):
+		_update_drive_progress()
 		var speed_kmh := absf(player_car.speed) * 3.6
 		var steering_degrees := rad_to_deg(player_car.steering_angle)
-		telemetry_label.text = "HANDLING TEST FIELD\n%3.0f km/h  •  steering %+.0f°\nWASD / arrows to drive  •  R to reset" % [speed_kmh, steering_degrees]
+		var fps := Engine.get_frames_per_second()
+		var ao_mode := "SSAO" if is_instance_valid(scene_environment) and scene_environment.ssao_enabled else "FAST AO"
+		var route_percent := roundi(_calculate_route_progress(player_car.global_position) * 100.0)
+		var objective_text := "NEXT STOP  •  pull into the roadside diner  •  %d m" % roundi(player_car.global_position.distance_to(DINER_POSITION))
+		if diner_reached:
+			objective_text = "DINER STAMPED  •  continue through the open-road gateway  •  stamps %d" % roadside_stamps
+		if route_finished:
+			var endless_distance := endless_road.distance_from_gateway(player_car.global_position) if is_instance_valid(endless_road) else 0.0
+			objective_text = "OPEN ROAD  •  %.1f km beyond gateway  •  stamps %d" % [endless_distance / 1000.0, roadside_stamps]
+		telemetry_label.text = (
+			"COZY ROADS  •  SCENIC NIGHT DRIVE  •  %d FPS  •  %s\n"
+			+ "%3.0f km/h  •  steering %+.0f°  •  trip %.2f km  •  best %.2f km  •  route %d%%\n"
+			+ objective_text + "\n"
+			+ "WASD / arrows drive  •  LMB drag camera  •  R reset  •  O SSAO  •  M audio"
+		) % [fps, ao_mode, speed_kmh, steering_degrees, trip_distance / 1000.0, best_distance / 1000.0, route_percent]
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_O:
+		if is_instance_valid(scene_environment):
+			scene_environment.ssao_enabled = not scene_environment.ssao_enabled
+		get_viewport().set_input_as_handled()
+	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_M:
+		audio_muted = not audio_muted
+		AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), audio_muted)
+		get_viewport().set_input_as_handled()
+
+
+func _update_drive_progress() -> void:
+	var movement := player_car.global_position - last_car_position
+	var planar_distance := Vector2(movement.x, movement.z).length()
+	var reset_pressed := Input.is_physical_key_pressed(KEY_R)
+	var reset_started := reset_pressed and not reset_was_pressed
+	if reset_started or planar_distance > 18.0:
+		best_distance = maxf(best_distance, trip_distance)
+		trip_distance = 0.0
+		diner_reached = false
+		route_finished = false
+		if is_instance_valid(endless_road):
+			endless_road.reset_stream()
+		_save_progress()
+	elif planar_distance < 2.0:
+		trip_distance += planar_distance
+		best_distance = maxf(best_distance, trip_distance)
+	reset_was_pressed = reset_pressed
+	last_car_position = player_car.global_position
+
+
+func _calculate_route_progress(position_3d: Vector3) -> float:
+	if scenic_route_points.size() < 2 or route_total_length <= 0.0:
+		return 0.0
+	var nearest_distance_squared := INF
+	var nearest_route_distance := 0.0
+	var accumulated_distance := 0.0
+	for index in scenic_route_points.size() - 1:
+		var from := scenic_route_points[index]
+		var to := scenic_route_points[index + 1]
+		var segment := to - from
+		var segment_length := segment.length()
+		var t := clampf((position_3d - from).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
+		var closest := from + segment * t
+		var distance_squared := position_3d.distance_squared_to(closest)
+		if distance_squared < nearest_distance_squared:
+			nearest_distance_squared = distance_squared
+			nearest_route_distance = accumulated_distance + segment_length * t
+		accumulated_distance += segment_length
+	return clampf(nearest_route_distance / route_total_length, 0.0, 1.0)
 
 
 func _build_environment() -> void:
 	var world_environment := WorldEnvironment.new()
 	var environment := Environment.new()
-	environment.background_mode = Environment.BG_COLOR
-	environment.background_color = LIGHT_GRAY
+	scene_environment = environment
+
+	# Around 9 PM: the horizon still holds a trace of violet blue-hour light,
+	# while a shader-generated star field fills the darker upper sky.
+	var sky := Sky.new()
+	sky.sky_material = _build_night_sky_material()
+	environment.background_mode = Environment.BG_SKY
+	environment.sky = sky
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = WHITE
-	environment.ambient_light_energy = 0.52
+	environment.ambient_light_color = Color("5d718d")
+	environment.ambient_light_energy = 0.37
+	environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	environment.tonemap_mode = Environment.TONE_MAPPER_ACES
+	# Godot 4.7's Compatibility renderer supports a simplified SSAO pass.
+	# Keep it tight and restrained so it adds contact depth without dirty halos.
+	environment.ssao_enabled = false
+	environment.ssao_radius = 0.72
+	environment.ssao_intensity = 1.15
+
+	# Very light atmospheric perspective softens the far end of the course and
+	# prevents the black-and-white geometry from feeling cut out against the sky.
+	environment.fog_enabled = true
+	environment.fog_light_color = Color("354258")
+	environment.fog_light_energy = 0.46
+	environment.fog_density = 0.0032
+	environment.fog_sky_affect = 0.52
 	world_environment.environment = environment
 	add_child(world_environment)
 
-	var sun := DirectionalLight3D.new()
-	sun.name = "NeutralLight"
-	sun.light_color = WHITE
-	sun.light_energy = 0.82
-	sun.rotation_degrees = Vector3(-55.0, -30.0, 0.0)
-	sun.shadow_enabled = true
-	add_child(sun)
+	# The sun is below the horizon at this point. A tiny shadowless afterglow
+	# retains the violet warmth without producing an implausible daytime shadow.
+	var afterglow := DirectionalLight3D.new()
+	afterglow.name = "HorizonAfterglow"
+	afterglow.light_color = Color("c77c72")
+	afterglow.light_energy = 0.10
+	afterglow.rotation_degrees = Vector3(-4.0, -42.0, 0.0)
+	afterglow.shadow_enabled = false
+	add_child(afterglow)
+
+	# A moon-blue, shadowless fill preserves detail on the truck's shaded side.
+	var fill := DirectionalLight3D.new()
+	fill.name = "MoonFillLight"
+	fill.light_color = Color("7799c8")
+	fill.light_energy = 0.36
+	fill.rotation_degrees = Vector3(-48.0, 142.0, 0.0)
+	fill.shadow_enabled = false
+	add_child(fill)
+
+
+func _build_night_sky_material() -> ShaderMaterial:
+	var sky_shader := Shader.new()
+	sky_shader.code = """
+shader_type sky;
+
+float star_hash(vec2 point) {
+	point = fract(point * vec2(123.34, 456.21));
+	point += dot(point, point + 45.32);
+	return fract(point.x * point.y);
+}
+
+void sky() {
+	vec3 direction = normalize(EYEDIR);
+	float above_horizon = max(direction.y, 0.0);
+	vec3 horizon_color = vec3(0.20, 0.22, 0.32);
+	vec3 zenith_color = vec3(0.025, 0.055, 0.12);
+	vec3 color = mix(horizon_color, zenith_color, pow(above_horizon, 0.42));
+
+	if (direction.y < 0.0) {
+		float below_horizon = clamp(-direction.y, 0.0, 1.0);
+		color = mix(vec3(0.10, 0.13, 0.18), vec3(0.018, 0.026, 0.04), pow(below_horizon, 0.32));
+	}
+
+	vec2 spherical_uv = vec2(
+		atan(direction.z, direction.x) / 6.2831853 + 0.5,
+		asin(clamp(direction.y, -1.0, 1.0)) / 3.1415927 + 0.5
+	);
+	vec2 star_grid = spherical_uv * vec2(620.0, 280.0);
+	vec2 cell = floor(star_grid);
+	vec2 cell_position = fract(star_grid) - 0.5;
+	float seed = star_hash(cell);
+	vec2 jitter = vec2(star_hash(cell + 17.13), star_hash(cell + 93.71)) - 0.5;
+	float star_size = mix(0.045, 0.14, star_hash(cell + 31.47));
+	float star = 1.0 - smoothstep(star_size, star_size + 0.035, length(cell_position - jitter * 0.65));
+	star *= step(0.992, seed);
+	star *= smoothstep(0.025, 0.22, direction.y);
+	float brightness = mix(0.55, 1.55, star_hash(cell + 71.83));
+	vec3 star_tint = mix(vec3(0.68, 0.78, 1.0), vec3(1.0, 0.86, 0.68), star_hash(cell + 9.21));
+	color += star * brightness * star_tint;
+
+	COLOR = color;
+}
+"""
+	var material := ShaderMaterial.new()
+	material.shader = sky_shader
+	return material
 
 
 func _build_test_field() -> void:
@@ -67,11 +252,36 @@ func _build_test_field() -> void:
 	for z in range(-130, 46, 10):
 		_add_visual_box("GridLine", Vector3(104.0, 0.015, 0.055), Vector3(0.0, 0.065, float(z)), LIGHT_GRAY)
 
+	_build_ramp_course()
+	_build_side_slope()
+	_build_road_section()
+	_build_scenic_route()
+
+	# Closely-spaced transverse strips exercise all four dampers in sequence.
+	for index in 12:
+		_add_suspension_strip(
+			Vector3(0.0, 0.0, 2.0 - index * 0.72),
+			Vector2(10.0, 0.18),
+			0.10 if index % 2 == 0 else 0.14,
+			LIGHT_GRAY
+		)
+
+	# Staggered half-width strips make the truck articulate left-to-right.
+	for index in 8:
+		var strip_x := -2.5 if index % 2 == 0 else 2.5
+		_add_suspension_strip(
+			Vector3(strip_x, 0.0, -50.0 - index * 2.1),
+			Vector2(4.8, 0.55),
+			0.18,
+			MID_GRAY
+		)
+
 	# Main lane and center line.
 	_add_visual_box("LaneLeft", Vector3(0.14, 0.02, 168.0), Vector3(-5.0, 0.075, -43.0), WHITE)
 	_add_visual_box("LaneRight", Vector3(0.14, 0.02, 168.0), Vector3(5.0, 0.075, -43.0), WHITE)
 	for z in range(-122, 40, 8):
 		_add_visual_box("CenterDash", Vector3(0.11, 0.022, 3.8), Vector3(0.0, 0.078, float(z)), WHITE)
+	_build_main_lane_reflectors()
 
 	# Slalom for low-speed steering tests.
 	for index in 7:
@@ -88,6 +298,7 @@ func _build_test_field() -> void:
 		var color := WHITE if index % 2 == 0 else BLACK
 		_add_static_box("Boundary", Vector3(2.0, 0.8, 9.5), Vector3(-53.0, 0.2, z_position), color, true)
 		_add_static_box("Boundary", Vector3(2.0, 0.8, 9.5), Vector3(53.0, 0.2, z_position), color, true)
+	_finish_road_reflectors()
 
 
 func _add_marker(position_3d: Vector3, index: int) -> void:
@@ -122,6 +333,688 @@ func _add_turning_circle(center: Vector3, radius: float) -> void:
 		_add_visual_box("TurningCircle", Vector3(0.16, 0.025, 1.7), position_3d, WHITE, tangent_rotation)
 
 
+func _build_ramp_course() -> void:
+	# A low bridge-like ramp on the left side of the proving ground.
+	var ramp_angle := deg_to_rad(10.0)
+	_add_driveable_slab(
+		"RampUp",
+		Vector3(8.0, 0.28, 10.0),
+		Vector3(-23.0, 0.90, 4.0),
+		Vector3(ramp_angle, 0.0, 0.0),
+		Color("85898b")
+	)
+	_add_driveable_slab(
+		"RampCrest",
+		Vector3(8.0, 0.28, 10.5),
+		Vector3(-23.0, 1.76, -6.1),
+		Vector3.ZERO,
+		Color("8f9395")
+	)
+	_add_driveable_slab(
+		"RampDown",
+		Vector3(8.0, 0.28, 10.0),
+		Vector3(-23.0, 0.90, -16.2),
+		Vector3(-ramp_angle, 0.0, 0.0),
+		Color("85898b")
+	)
+	for marker in [[8.3, 0.16], [-0.8, 1.92], [-11.4, 1.92], [-20.4, 0.16]]:
+		_add_visual_box("RampMarker", Vector3(8.2, 0.035, 0.18), Vector3(-23.0, marker[1], marker[0]), WHITE)
+
+
+func _build_side_slope() -> void:
+	# Layer 2 lets suspension rays read the cross-slope without the main body
+	# collider catching on its shallow leading edge.
+	var slope := StaticBody3D.new()
+	slope.name = "SideSlope"
+	slope.collision_layer = 2
+	slope.collision_mask = 0
+	slope.position = Vector3(-28.0, 0.13, -47.0)
+	slope.rotation.z = deg_to_rad(2.5)
+	add_child(slope)
+	var size := Vector3(10.0, 0.18, 22.0)
+	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.mesh = MeshFactory.beveled_box(size, 0.035)
+	mesh_instance.material_override = _material(Color("6d7173"))
+	slope.add_child(mesh_instance)
+	var collision_shape := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	collision_shape.shape = shape
+	slope.add_child(collision_shape)
+	_add_visual_box("SlopeEntry", Vector3(10.4, 0.025, 0.22), Vector3(-28.0, 0.11, -35.9), WHITE)
+	_add_visual_box("SlopeExit", Vector3(10.4, 0.025, 0.22), Vector3(-28.0, 0.11, -58.1), WHITE)
+
+
+func _build_road_section() -> void:
+	var points: Array[Vector3] = [
+		Vector3(18.0, 0.0, 35.0),
+		Vector3(18.0, 0.0, 12.0),
+		Vector3(27.0, 0.0, -10.0),
+		Vector3(34.0, 0.0, -34.0),
+		Vector3(29.0, 0.0, -58.0),
+		Vector3(19.0, 0.0, -84.0),
+		Vector3(19.0, 0.0, -122.0),
+	]
+	for index in points.size() - 1:
+		_add_road_test_segment(points[index], points[index + 1], 8.5)
+
+
+func _build_scenic_route() -> void:
+	# The proving-ground road now feeds directly into a short, representative
+	# night drive. A broad hidden ground slab keeps the first art pass reliable.
+	_add_static_box(
+		"ScenicGround",
+		Vector3(190.0, 0.5, 290.0),
+		# Keep the scenic surface 2 cm below the proving-ground slab where the
+		# two regions overlap. Coplanar faces caused large flickering triangles.
+		Vector3(0.0, -0.27, -285.0),
+		Color("18241f"),
+		true
+	)
+	scenic_route_points = [
+		Vector3(19.0, 0.0, -122.0),
+		Vector3(18.0, 0.0, -151.0),
+		Vector3(8.0, 0.0, -181.0),
+		Vector3(-13.0, 0.0, -209.0),
+		Vector3(-7.0, 0.0, -239.0),
+		Vector3(17.0, 0.0, -270.0),
+		Vector3(27.0, 0.0, -304.0),
+		Vector3(17.0, 0.0, -338.0),
+		Vector3(-4.0, 0.0, -372.0),
+		Vector3(-3.0, 0.0, -408.0),
+	]
+	route_total_length = 0.0
+	for index in scenic_route_points.size() - 1:
+		route_total_length += scenic_route_points[index].distance_to(scenic_route_points[index + 1])
+		_add_scenic_road_segment(scenic_route_points[index], scenic_route_points[index + 1], 8.5)
+	_build_scenic_forest()
+	_build_scenic_guardrails()
+	_build_utility_line()
+	_build_roadside_diner()
+	_build_distant_hills()
+	_build_route_finish()
+
+
+func _add_scenic_road_segment(from: Vector3, to: Vector3, width: float) -> void:
+	var direction := to - from
+	var distance := direction.length()
+	var midpoint := (from + to) * 0.5 + Vector3.UP * 0.065
+	var yaw := atan2(direction.x, direction.z)
+	_add_visual_box(
+		"GravelShoulder",
+		Vector3(width + 2.4, 0.07, distance + 0.65),
+		midpoint,
+		Color("493f37"),
+		Vector3(0.0, yaw, 0.0)
+	)
+	_add_road_test_segment(from, to, width)
+
+
+func _build_scenic_forest() -> void:
+	var random := RandomNumberGenerator.new()
+	random.seed = 27092026
+	for segment_index in scenic_route_points.size() - 1:
+		var from := scenic_route_points[segment_index]
+		var to := scenic_route_points[segment_index + 1]
+		var direction := to - from
+		var distance := direction.length()
+		var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
+		var tree_count := maxi(3, int(distance / 7.0))
+		for tree_index in tree_count:
+			var t := (float(tree_index) + 0.45 + random.randf_range(-0.16, 0.16)) / float(tree_count)
+			for side in [-1.0, 1.0]:
+				var offset := 7.6 + random.randf_range(0.0, 8.5)
+				var tree_position: Vector3 = from.lerp(to, clampf(t, 0.04, 0.96)) + perpendicular * offset * side
+				# Leave a generous clearing for the roadside stop.
+				if tree_position.distance_to(Vector3(44.0, 0.0, -280.0)) < 30.0:
+					continue
+				_queue_pine_tree(tree_position, random.randf_range(0.78, 1.28), random.randf() > 0.52)
+	_finish_pine_tree_batches()
+
+
+func _queue_pine_tree(position_3d: Vector3, tree_scale: float, darker: bool) -> void:
+	if not is_instance_valid(tree_trunk_material):
+		tree_trunk_material = _material(Color("49362d"))
+		tree_foliage_material = _material(Color("244638"))
+		tree_foliage_dark_material = _material(Color("18362f"))
+	pine_positions.append(position_3d)
+	pine_scales.append(tree_scale)
+	pine_dark_flags.append(darker)
+
+	# Keep one inexpensive trunk collision per tree while batching all visuals.
+	var tree := StaticBody3D.new()
+	tree.name = "PineTreeCollision"
+	tree.position = position_3d
+	tree.scale = Vector3.ONE * tree_scale
+	tree.collision_layer = 1
+	tree.collision_mask = 0
+	add_child(tree)
+	var collision_shape := CollisionShape3D.new()
+	var collision := CylinderShape3D.new()
+	collision.radius = 0.34
+	collision.height = 2.5
+	collision_shape.shape = collision
+	collision_shape.position.y = 1.25
+	tree.add_child(collision_shape)
+
+
+func _finish_pine_tree_batches() -> void:
+	var trunk_transforms: Array[Transform3D] = []
+	var light_lower_transforms: Array[Transform3D] = []
+	var light_upper_transforms: Array[Transform3D] = []
+	var dark_lower_transforms: Array[Transform3D] = []
+	var dark_upper_transforms: Array[Transform3D] = []
+	var base_ao_transforms: Array[Transform3D] = []
+	for index in pine_positions.size():
+		var position_3d := pine_positions[index]
+		var tree_scale := pine_scales[index]
+		var scaled_basis := Basis.IDENTITY.scaled(Vector3.ONE * tree_scale)
+		trunk_transforms.append(Transform3D(scaled_basis, position_3d + Vector3.UP * 1.2 * tree_scale))
+		var lower_transform := Transform3D(scaled_basis, position_3d + Vector3.UP * 2.75 * tree_scale)
+		var upper_transform := Transform3D(scaled_basis, position_3d + Vector3.UP * 4.18 * tree_scale)
+		var ao_basis := Basis.IDENTITY.scaled(Vector3(1.22 * tree_scale, 1.0, 1.22 * tree_scale))
+		base_ao_transforms.append(Transform3D(ao_basis, position_3d + Vector3.UP * 0.018))
+		if pine_dark_flags[index]:
+			dark_lower_transforms.append(lower_transform)
+			dark_upper_transforms.append(upper_transform)
+		else:
+			light_lower_transforms.append(lower_transform)
+			light_upper_transforms.append(upper_transform)
+
+	var trunk_mesh := CylinderMesh.new()
+	trunk_mesh.top_radius = 0.22
+	trunk_mesh.bottom_radius = 0.34
+	trunk_mesh.height = 2.4
+	trunk_mesh.radial_segments = 7
+	var lower_foliage_mesh := CylinderMesh.new()
+	lower_foliage_mesh.top_radius = 0.0
+	lower_foliage_mesh.bottom_radius = 1.72
+	lower_foliage_mesh.height = 3.35
+	lower_foliage_mesh.radial_segments = 8
+	var upper_foliage_mesh := CylinderMesh.new()
+	upper_foliage_mesh.top_radius = 0.0
+	upper_foliage_mesh.bottom_radius = 1.28
+	upper_foliage_mesh.height = 2.75
+	upper_foliage_mesh.radial_segments = 8
+	_add_tree_multimesh("PineTrunks", trunk_mesh, tree_trunk_material, trunk_transforms)
+	_add_tree_multimesh("PineFoliageLightLower", lower_foliage_mesh, tree_foliage_material, light_lower_transforms)
+	_add_tree_multimesh("PineFoliageLightUpper", upper_foliage_mesh, tree_foliage_material, light_upper_transforms)
+	_add_tree_multimesh("PineFoliageDarkLower", lower_foliage_mesh, tree_foliage_dark_material, dark_lower_transforms)
+	_add_tree_multimesh("PineFoliageDarkUpper", upper_foliage_mesh, tree_foliage_dark_material, dark_upper_transforms)
+	var ao_material := StandardMaterial3D.new()
+	ao_material.albedo_color = Color("080c0d")
+	ao_material.vertex_color_use_as_albedo = true
+	ao_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ao_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ao_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_add_tree_multimesh("PineBaseAmbientOcclusion", MeshFactory.soft_disc(20), ao_material, base_ao_transforms)
+
+
+func _add_tree_multimesh(node_name: String, mesh: Mesh, material: Material, transforms: Array[Transform3D]) -> void:
+	if transforms.is_empty():
+		return
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.mesh = mesh
+	multimesh.instance_count = transforms.size()
+	for index in transforms.size():
+		multimesh.set_instance_transform(index, transforms[index])
+	# All batches share the same broad route bounds, avoiding per-tree draw calls.
+	multimesh.custom_aabb = AABB(Vector3(-100.0, -1.0, -430.0), Vector3(200.0, 10.0, 330.0))
+	var instance := MultiMeshInstance3D.new()
+	instance.name = node_name
+	instance.multimesh = multimesh
+	instance.material_override = material
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	instance.visibility_range_end = 300.0
+	add_child(instance)
+
+
+func _build_distant_hills() -> void:
+	for hill_data in [
+		[-67.0, -190.0, 20.0, 11.0], [73.0, -205.0, 25.0, 13.0],
+		[-76.0, -275.0, 29.0, 15.0], [78.0, -326.0, 23.0, 12.0],
+		[-62.0, -390.0, 24.0, 13.0], [55.0, -415.0, 31.0, 16.0],
+	]:
+		_add_low_poly_hill(
+			Vector3(hill_data[0], 0.0, hill_data[1]),
+			hill_data[2],
+			hill_data[3]
+		)
+
+
+func _add_low_poly_hill(position_3d: Vector3, radius: float, height: float) -> void:
+	var hill := MeshInstance3D.new()
+	hill.name = "DistantHill"
+	var cone := CylinderMesh.new()
+	cone.top_radius = radius * 0.12
+	cone.bottom_radius = radius
+	cone.height = height
+	cone.radial_segments = 9
+	hill.mesh = cone
+	hill.material_override = _material(Color("152a29"))
+	hill.position = position_3d + Vector3.UP * height * 0.5
+	add_child(hill)
+
+
+func _build_scenic_guardrails() -> void:
+	_add_guardrail_segment(1, -1.0)
+	_add_guardrail_segment(2, 1.0)
+	_add_guardrail_segment(5, -1.0)
+	_add_guardrail_segment(7, 1.0)
+	for bend_index in [2, 4, 6, 8]:
+		_add_chevron_marker(bend_index)
+
+
+func _add_guardrail_segment(segment_index: int, side: float) -> void:
+	if not is_instance_valid(guardrail_material):
+		guardrail_material = _material(Color("737b81"))
+	var from := scenic_route_points[segment_index]
+	var to := scenic_route_points[segment_index + 1]
+	var direction := to - from
+	var distance := direction.length()
+	var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
+	var yaw := atan2(direction.x, direction.z)
+	var rail_center := (from + to) * 0.5 + perpendicular * 5.2 * side + Vector3.UP * 0.76
+	_add_static_box_rotated(
+		"Guardrail",
+		Vector3(0.18, 0.28, distance - 1.2),
+		rail_center,
+		Vector3(0.0, yaw, 0.0),
+		Color("737b81"),
+		true,
+		0.045
+	)
+	var post_count := maxi(2, int(distance / 3.5))
+	for post_index in post_count + 1:
+		var t := float(post_index) / float(post_count)
+		var post_position := from.lerp(to, t) + perpendicular * 5.2 * side + Vector3.UP * 0.45
+		_add_visual_box("GuardrailPost", Vector3(0.18, 0.90, 0.18), post_position, Color("5f676c"), Vector3(0.0, yaw, 0.0))
+		if post_index % 2 == 0:
+			_add_road_reflector(post_position + Vector3.UP * 0.44, Vector3(0.0, yaw, 0.0), true)
+
+
+func _add_chevron_marker(point_index: int) -> void:
+	var previous := scenic_route_points[point_index - 1]
+	var point := scenic_route_points[point_index]
+	var following := scenic_route_points[point_index + 1]
+	var incoming := (point - previous).normalized()
+	var outgoing := (following - point).normalized()
+	var tangent := (incoming + outgoing).normalized()
+	var perpendicular := Vector3(tangent.z, 0.0, -tangent.x)
+	var turn_cross := incoming.x * outgoing.z - incoming.z * outgoing.x
+	var outside_side := 1.0 if turn_cross > 0.0 else -1.0
+	var marker_position := point + perpendicular * outside_side * 5.6
+	var yaw := atan2(incoming.x, incoming.z)
+	_add_visual_box("ChevronPole", Vector3(0.13, 1.55, 0.13), marker_position + Vector3.UP * 0.78, Color("4b5054"))
+	_add_emissive_box(
+		"ChevronMarker",
+		Vector3(1.30, 0.62, 0.10),
+		marker_position + Vector3.UP * 1.72,
+		Vector3(0.0, yaw, 0.0),
+		Color("c58b3d"),
+		Color("ffc164"),
+		0.72
+	)
+
+
+func _build_utility_line() -> void:
+	var pole_positions: Array[Vector3] = []
+	for index in scenic_route_points.size() - 1:
+		if index % 2 != 0:
+			continue
+		var point := scenic_route_points[index]
+		var direction := scenic_route_points[index + 1] - point
+		var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
+		var pole_position := point - perpendicular * 8.8
+		pole_positions.append(pole_position)
+		var warm_lamp := pole_position.distance_to(Vector3(44.0, 0.0, -280.0)) < 75.0
+		_add_utility_pole(pole_position, warm_lamp)
+	for index in pole_positions.size() - 1:
+		_add_cylinder_between(
+			"UtilityWire",
+			pole_positions[index] + Vector3.UP * 6.55,
+			pole_positions[index + 1] + Vector3.UP * 6.55,
+			0.035,
+			_material(Color("11171b"))
+		)
+
+
+func _add_utility_pole(position_3d: Vector3, warm_lamp: bool) -> void:
+	if not is_instance_valid(utility_wood_material):
+		utility_wood_material = _material(Color("594337"))
+	var pole := StaticBody3D.new()
+	pole.name = "UtilityPole"
+	pole.position = position_3d
+	pole.collision_layer = 1
+	pole.collision_mask = 0
+	add_child(pole)
+	var pole_mesh := MeshInstance3D.new()
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = 0.17
+	cylinder.bottom_radius = 0.25
+	cylinder.height = 6.8
+	cylinder.radial_segments = 8
+	pole_mesh.mesh = cylinder
+	pole_mesh.material_override = utility_wood_material
+	pole_mesh.position.y = 3.4
+	pole.add_child(pole_mesh)
+	_add_mesh_box_child(pole, "Crossbar", Vector3(2.8, 0.13, 0.16), Vector3(0.0, 6.25, 0.0), utility_wood_material, 0.035)
+	var collision_shape := CollisionShape3D.new()
+	var collision := CylinderShape3D.new()
+	collision.radius = 0.25
+	collision.height = 4.0
+	collision_shape.shape = collision
+	collision_shape.position.y = 2.0
+	pole.add_child(collision_shape)
+	if warm_lamp:
+		var bulb := OmniLight3D.new()
+		bulb.name = "RoadsideLamp"
+		bulb.light_color = Color("ffc47c")
+		bulb.light_energy = 0.82
+		bulb.omni_range = 10.5
+		bulb.omni_attenuation = 1.45
+		bulb.shadow_enabled = false
+		bulb.position = Vector3(0.0, 5.65, 0.0)
+		pole.add_child(bulb)
+		_add_mesh_box_child(pole, "LampGlow", Vector3(0.34, 0.22, 0.34), Vector3(0.0, 5.65, 0.0), _emissive_material(Color("d89c55"), Color("ffd48d"), 1.15, 0.35), 0.055)
+
+
+func _add_cylinder_between(node_name: String, from: Vector3, to: Vector3, radius: float, material: Material) -> void:
+	var direction := to - from
+	var length := direction.length()
+	if length < 0.01:
+		return
+	var y_axis := direction / length
+	var reference := Vector3.FORWARD if absf(y_axis.dot(Vector3.FORWARD)) < 0.96 else Vector3.RIGHT
+	var x_axis := reference.cross(y_axis).normalized()
+	var z_axis := x_axis.cross(y_axis).normalized()
+	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.name = node_name
+	var cylinder := CylinderMesh.new()
+	cylinder.top_radius = radius
+	cylinder.bottom_radius = radius
+	cylinder.height = length
+	cylinder.radial_segments = 6
+	mesh_instance.mesh = cylinder
+	mesh_instance.material_override = material
+	mesh_instance.global_transform = Transform3D(Basis(x_axis, y_axis, z_axis), (from + to) * 0.5)
+	add_child(mesh_instance)
+
+
+func _build_roadside_diner() -> void:
+	var lot_center := Vector3(42.0, 0.075, -281.0)
+	_add_visual_box("DinerParkingLot", Vector3(31.0, 0.08, 23.0), lot_center, Color("252a2d"))
+	# Pale parking stripes lead naturally off the road shoulder.
+	for stripe_index in 5:
+		_add_visual_box(
+			"ParkingStripe",
+			Vector3(0.10, 0.025, 6.0),
+			Vector3(31.5 + stripe_index * 3.25, 0.13, -283.0),
+			Color("858889")
+		)
+
+	_add_static_box_rotated(
+		"RoadsideDiner",
+		Vector3(14.0, 4.4, 10.0),
+		Vector3(51.0, 2.2, -281.0),
+		Vector3.ZERO,
+		Color("a4795f"),
+		true,
+		0.12
+	)
+	_add_visual_box("DinerRoof", Vector3(15.2, 0.38, 11.2), Vector3(51.0, 4.54, -281.0), Color("64382f"))
+	_add_visual_box("DinerCanopy", Vector3(7.0, 0.24, 10.8), Vector3(40.5, 3.15, -281.0), Color("7b4437"))
+	for z in [-285.2, -276.8]:
+		_add_visual_box("CanopyPost", Vector3(0.22, 3.0, 0.22), Vector3(37.2, 1.55, z), Color("6b6f70"))
+
+	if not is_instance_valid(warm_window_material):
+		warm_window_material = _emissive_material(Color("dca76c"), Color("ffbd72"), 1.25, 0.32)
+	for z in [-284.4, -279.8, -276.9]:
+		_add_mesh_box_world(
+			"WarmDinerWindow",
+			Vector3(0.08, 1.45, 2.35),
+			Vector3(43.96, 2.15, z),
+			Vector3.ZERO,
+			warm_window_material,
+			0.018
+		)
+	_add_visual_box("DinerDoor", Vector3(0.09, 2.25, 1.25), Vector3(43.93, 1.24, -282.2), Color("293239"))
+
+	# Two simple fuel pumps make the stop readable from the road at a glance.
+	for z in [-283.1, -278.9]:
+		_add_static_box_rotated(
+			"FuelPump",
+			Vector3(0.75, 1.45, 0.72),
+			Vector3(38.8, 0.78, z),
+			Vector3.ZERO,
+			Color("a9503c"),
+			true,
+			0.08
+		)
+		_add_emissive_box(
+			"PumpDisplay",
+			Vector3(0.05, 0.36, 0.42),
+			Vector3(38.40, 1.02, z),
+			Vector3.ZERO,
+			Color("7c9c94"),
+			Color("a8e2cf"),
+			0.60
+		)
+
+	for lamp_position in [Vector3(39.5, 2.92, -285.0), Vector3(39.5, 2.92, -277.0), Vector3(47.0, 4.25, -281.0)]:
+		var lamp := OmniLight3D.new()
+		lamp.name = "DinerWarmLight"
+		lamp.light_color = Color("ffc27a")
+		lamp.light_energy = 1.05
+		lamp.omni_range = 11.5
+		lamp.omni_attenuation = 1.35
+		lamp.shadow_enabled = false
+		lamp.position = lamp_position
+		add_child(lamp)
+
+	# A tall glowing sign works as the route's visual destination from afar.
+	_add_static_box_rotated(
+		"DinerSignPole",
+		Vector3(0.24, 5.4, 0.24),
+		Vector3(31.5, 2.7, -263.0),
+		Vector3.ZERO,
+		Color("555b5e"),
+		true,
+		0.05
+	)
+	_add_emissive_box(
+		"DinerSign",
+		Vector3(0.25, 1.75, 3.8),
+		Vector3(31.5, 5.8, -263.0),
+		Vector3.ZERO,
+		Color("a44e3e"),
+		Color("f28a55"),
+		1.05
+	)
+	_add_drive_trigger("DinerArrival", DINER_POSITION + Vector3.UP * 1.5, Vector3(22.0, 3.0, 18.0), &"_on_diner_entered")
+
+
+func _build_route_finish() -> void:
+	var finish_position := scenic_route_points[-1]
+	var approach := finish_position - scenic_route_points[-2]
+	var perpendicular := Vector3(approach.z, 0.0, -approach.x).normalized()
+	var yaw := atan2(approach.x, approach.z)
+	for side in [-1.0, 1.0]:
+		_add_emissive_box(
+			"RouteFinishMarker",
+			Vector3(0.24, 1.45, 0.24),
+			finish_position + perpendicular * 4.5 * side + Vector3.UP * 0.73,
+			Vector3(0.0, yaw, 0.0),
+			Color("5e7f83"),
+			Color("8de4d7"),
+			0.72
+		)
+	_add_drive_trigger("RouteFinish", finish_position + Vector3.UP * 1.5, Vector3(15.0, 3.0, 16.0), &"_on_route_finished")
+
+
+func _add_drive_trigger(node_name: String, position_3d: Vector3, size: Vector3, callback: StringName) -> void:
+	var area := Area3D.new()
+	area.name = node_name
+	area.position = position_3d
+	area.collision_layer = 0
+	area.collision_mask = 1
+	area.monitoring = true
+	var collision_shape := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	collision_shape.shape = shape
+	area.add_child(collision_shape)
+	area.body_entered.connect(Callable(self, callback))
+	add_child(area)
+
+
+func _on_diner_entered(body: Node3D) -> void:
+	if body != player_car or diner_reached:
+		return
+	diner_reached = true
+	roadside_stamps += 1
+	_save_progress()
+
+
+func _on_route_finished(body: Node3D) -> void:
+	if body == player_car:
+		route_finished = true
+		_save_progress()
+
+
+func _load_progress() -> void:
+	var config := ConfigFile.new()
+	if config.load(SAVE_PATH) != OK:
+		return
+	roadside_stamps = maxi(0, int(config.get_value("progress", "roadside_stamps", 0)))
+	best_distance = maxf(0.0, float(config.get_value("progress", "best_distance", 0.0)))
+
+
+func _save_progress() -> void:
+	var config := ConfigFile.new()
+	config.set_value("progress", "roadside_stamps", roadside_stamps)
+	config.set_value("progress", "best_distance", maxf(best_distance, trip_distance))
+	var error := config.save(SAVE_PATH)
+	if error != OK:
+		push_warning("Could not save Cozy Roads progress: %s" % error_string(error))
+
+
+func _exit_tree() -> void:
+	_save_progress()
+
+
+func _add_road_test_segment(from: Vector3, to: Vector3, width: float) -> void:
+	var direction := to - from
+	var distance := direction.length()
+	var midpoint := (from + to) * 0.5 + Vector3.UP * 0.09
+	var yaw := atan2(direction.x, direction.z)
+	var rotation_3d := Vector3(0.0, yaw, 0.0)
+	_add_visual_box("RoadSection", Vector3(width, 0.05, distance + 0.35), midpoint, Color("363a3c"), rotation_3d)
+
+	var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
+	for side in [-1.0, 1.0]:
+		var edge_position: Vector3 = midpoint + perpendicular * width * 0.43 * side + Vector3.UP * 0.035
+		_add_visual_box("RoadEdge", Vector3(0.12, 0.025, distance), edge_position, WHITE, rotation_3d)
+	var dash_count := maxi(1, int(distance / 5.0))
+	for dash_index in dash_count:
+		if dash_index % 2 == 0:
+			var t := (float(dash_index) + 0.5) / float(dash_count)
+			var dash_position := from.lerp(to, t) + Vector3.UP * 0.135
+			_add_visual_box("RoadDash", Vector3(0.10, 0.026, minf(2.5, distance / dash_count * 0.58)), dash_position, WHITE, rotation_3d)
+
+	# Small emissive studs suggest retroreflectors catching the headlights.
+	var stud_count := maxi(2, int(distance / 3.2))
+	for stud_index in stud_count + 1:
+		var t := float(stud_index) / float(stud_count)
+		for side in [-1.0, 1.0]:
+			var stud_position: Vector3 = from.lerp(to, t) + perpendicular * width * 0.43 * side + Vector3.UP * 0.15
+			_add_road_reflector(stud_position, rotation_3d, false)
+
+
+func _build_main_lane_reflectors() -> void:
+	var index := 0
+	for z in range(-124, 41, 5):
+		for side in [-1.0, 1.0]:
+			_add_road_reflector(Vector3(side * 4.86, 0.11, float(z)), Vector3.ZERO, false)
+		if index % 2 == 0:
+			_add_road_reflector(Vector3(0.0, 0.11, float(z)), Vector3.ZERO, true)
+		index += 1
+
+
+func _add_road_reflector(position_3d: Vector3, rotation_3d: Vector3, amber: bool) -> void:
+	if not is_instance_valid(white_reflector_material):
+		white_reflector_material = _emissive_material(Color("bcc9cb"), Color("d8f3ff"), 0.72, 0.42)
+		amber_reflector_material = _emissive_material(Color("b77b3d"), Color("ffb65f"), 0.64, 0.46)
+	if not is_instance_valid(road_reflector_mesh):
+		road_reflector_mesh = MeshFactory.beveled_box(Vector3(0.15, 0.055, 0.24), 0.018)
+	var reflector_transform := Transform3D(Basis.from_euler(rotation_3d), position_3d)
+	if amber:
+		amber_reflector_transforms.append(reflector_transform)
+	else:
+		white_reflector_transforms.append(reflector_transform)
+
+
+func _finish_road_reflectors() -> void:
+	_add_reflector_multimesh("WhiteRoadStuds", white_reflector_transforms, white_reflector_material)
+	_add_reflector_multimesh("AmberRoadStuds", amber_reflector_transforms, amber_reflector_material)
+
+
+func _add_reflector_multimesh(node_name: String, transforms: Array[Transform3D], material: Material) -> void:
+	if transforms.is_empty():
+		return
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.mesh = road_reflector_mesh
+	multimesh.instance_count = transforms.size()
+	for index in transforms.size():
+		multimesh.set_instance_transform(index, transforms[index])
+	var instance := MultiMeshInstance3D.new()
+	instance.name = node_name
+	instance.multimesh = multimesh
+	instance.material_override = material
+	add_child(instance)
+
+
+func _add_driveable_slab(node_name: String, size: Vector3, position_3d: Vector3, rotation_3d: Vector3, color: Color) -> void:
+	var body := StaticBody3D.new()
+	body.name = node_name
+	body.position = position_3d
+	body.rotation = rotation_3d
+	body.collision_layer = 1
+	body.collision_mask = 0
+	add_child(body)
+	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.mesh = MeshFactory.beveled_box(size, 0.055)
+	mesh_instance.material_override = _material(color)
+	body.add_child(mesh_instance)
+	var collision_shape := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	collision_shape.shape = shape
+	body.add_child(collision_shape)
+
+
+func _add_suspension_strip(position_3d: Vector3, footprint: Vector2, height: float, color: Color) -> void:
+	var strip := StaticBody3D.new()
+	strip.name = "SuspensionStrip"
+	# Layer 2 is sampled by the wheel rays but ignored by the main car collider.
+	strip.collision_layer = 2
+	strip.collision_mask = 0
+	strip.position = position_3d + Vector3.UP * height * 0.5
+	add_child(strip)
+	var size := Vector3(footprint.x, height, footprint.y)
+	var mesh_instance := MeshInstance3D.new()
+	mesh_instance.mesh = MeshFactory.beveled_box(size, minf(0.025, height * 0.18))
+	mesh_instance.material_override = _material(color)
+	strip.add_child(mesh_instance)
+	var collision_shape := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	collision_shape.shape = shape
+	strip.add_child(collision_shape)
+
+
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
@@ -141,7 +1034,12 @@ func _build_ui() -> void:
 	layer.add_child(panel)
 	var label := Label.new()
 	telemetry_label = label
-	label.text = "HANDLING TEST FIELD\n0 km/h  •  steering 0°\nWASD / arrows to drive  •  R to reset"
+	label.text = (
+		"COZY ROADS  •  SCENIC NIGHT DRIVE  •  -- FPS  •  FAST AO\n"
+		+ "0 km/h  •  steering 0°  •  trip 0.00 km  •  best %.2f km  •  route 0%%\n"
+		+ "NEXT STOP  •  pull into the roadside diner\n"
+		+ "WASD / arrows drive  •  LMB drag camera  •  R reset  •  O SSAO  •  M audio"
+	) % (best_distance / 1000.0)
 	label.add_theme_font_size_override("font_size", 17)
 	label.add_theme_color_override("font_color", WHITE)
 	panel.add_child(label)
@@ -153,9 +1051,12 @@ func _add_static_box(node_name: String, size: Vector3, position_3d: Vector3, col
 	body.position = position_3d
 	add_child(body)
 	var mesh := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
+	if node_name == "Boundary":
+		mesh.mesh = MeshFactory.beveled_box(size, 0.075)
+	else:
+		var box := BoxMesh.new()
+		box.size = size
+		mesh.mesh = box
 	mesh.material_override = _material(color)
 	body.add_child(mesh)
 	if collision:
@@ -178,8 +1079,92 @@ func _add_visual_box(node_name: String, size: Vector3, position_3d: Vector3, col
 	add_child(mesh)
 
 
+func _add_static_box_rotated(
+	node_name: String,
+	size: Vector3,
+	position_3d: Vector3,
+	rotation_3d: Vector3,
+	color: Color,
+	collision: bool,
+	bevel: float
+) -> StaticBody3D:
+	var body := StaticBody3D.new()
+	body.name = node_name
+	body.position = position_3d
+	body.rotation = rotation_3d
+	body.collision_layer = 1
+	body.collision_mask = 0
+	add_child(body)
+	_add_mesh_box_child(body, node_name + "Visual", size, Vector3.ZERO, _material(color), bevel)
+	if collision:
+		var collision_shape := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = size
+		collision_shape.shape = shape
+		body.add_child(collision_shape)
+	return body
+
+
+func _add_mesh_box_child(
+	parent: Node3D,
+	node_name: String,
+	size: Vector3,
+	local_position: Vector3,
+	material: Material,
+	bevel: float,
+	local_rotation := Vector3.ZERO
+) -> MeshInstance3D:
+	var mesh := MeshInstance3D.new()
+	mesh.name = node_name
+	mesh.mesh = MeshFactory.beveled_box(size, bevel)
+	mesh.material_override = material
+	mesh.position = local_position
+	mesh.rotation = local_rotation
+	parent.add_child(mesh)
+	return mesh
+
+
+func _add_mesh_box_world(
+	node_name: String,
+	size: Vector3,
+	position_3d: Vector3,
+	rotation_3d: Vector3,
+	material: Material,
+	bevel: float
+) -> MeshInstance3D:
+	return _add_mesh_box_child(self, node_name, size, position_3d, material, bevel, rotation_3d)
+
+
+func _add_emissive_box(
+	node_name: String,
+	size: Vector3,
+	position_3d: Vector3,
+	rotation_3d: Vector3,
+	color: Color,
+	emission_color: Color,
+	emission_energy: float
+) -> MeshInstance3D:
+	return _add_mesh_box_world(
+		node_name,
+		size,
+		position_3d,
+		rotation_3d,
+		_emissive_material(color, emission_color, emission_energy, 0.38),
+		minf(0.055, minf(size.x, minf(size.y, size.z)) * 0.18)
+	)
+
+
 func _material(color: Color) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.albedo_color = color
 	material.roughness = 0.92
+	return material
+
+
+func _emissive_material(color: Color, emission_color: Color, emission_energy: float, roughness: float) -> StandardMaterial3D:
+	var material := _material(color)
+	material.roughness = roughness
+	material.emission_enabled = true
+	material.emission = emission_color
+	material.emission_energy_multiplier = emission_energy
 	return material
