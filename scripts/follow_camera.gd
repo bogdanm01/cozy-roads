@@ -3,9 +3,9 @@ extends Camera3D
 
 @export var target: Node3D
 
-var follow_distance := 6.25
-var follow_height := 3.15
-var look_height := 1.15
+var follow_distance := 7.35
+var follow_height := 3.45
+var look_height := 1.20
 var orbit_yaw := 0.0
 var orbit_pitch := 0.0
 var target_orbit_yaw := 0.0
@@ -21,7 +21,7 @@ const ORBIT_SMOOTH_SPEED := 9.0
 
 func _ready() -> void:
 	position = Vector3(0.0, follow_height, follow_distance)
-	fov = 72.0
+	fov = 68.0
 	far = 520.0
 
 

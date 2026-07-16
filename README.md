@@ -15,6 +15,13 @@ brake lights, and procedural engine audio. The world includes a starry 9 PM sky,
 fog, reflective road studs, forest scenery, ramps, grooves, guardrails, utility
 lights, and a GPU-batched streaming road that recycles old chunks.
 
+Sparse two-way traffic shares both the scenic and endless roads. Five pooled
+low-poly cars use separate lanes, varied cruising speeds, safe following gaps,
+player-aware braking, headlights, and responsive brake lights without creating
+or destroying nodes during play. The scenic route now passes a moonlit overlook,
+timber-covered bridge, roadside diner, and warm forest cabin with a campfire;
+streamed chunks add deterministic rocks and reflective wayfinding signs.
+
 ### Controls
 
 - `W` / `Up`: accelerate
@@ -31,10 +38,12 @@ and the current objective.
 
 ## Performance
 
-The default `FAST AO` mode targets at least 60 FPS at 2560×1440. The endless
-section was measured at 99 FPS minimum on an Apple M1 Pro using the Compatibility
-renderer. Road markings, reflectors, trees, and ambient-occlusion cards are
-batched; endless chunks are capped at 12 active sections.
+The default `FAST AO` mode targets at least 60 FPS at 2560×1440. On an Apple M1
+Pro using the Compatibility renderer, the illuminated scenic route with live
+traffic measured 99.1 FPS average / 97 FPS minimum; the 11-chunk endless section
+with traffic measured 99.6 FPS average / 99 FPS minimum. Road markings,
+reflectors, trees, rocks, and ambient-occlusion cards are batched; endless chunks
+are capped at 12 active sections and traffic is capped at five pooled vehicles.
 
 ## Run
 

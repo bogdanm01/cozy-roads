@@ -33,6 +33,9 @@ var _trunk_material: StandardMaterial3D
 var _foliage_material: StandardMaterial3D
 var _foliage_dark_material: StandardMaterial3D
 var _ambient_occlusion_material: StandardMaterial3D
+var _rock_material: StandardMaterial3D
+var _sign_post_material: StandardMaterial3D
+var _wayfinding_material: StandardMaterial3D
 
 var _marking_mesh: BoxMesh
 var _reflector_mesh: ArrayMesh
@@ -40,6 +43,7 @@ var _trunk_mesh: CylinderMesh
 var _lower_foliage_mesh: CylinderMesh
 var _upper_foliage_mesh: CylinderMesh
 var _tree_ao_mesh: ArrayMesh
+var _rock_mesh: CylinderMesh
 
 
 func _ready() -> void:
@@ -86,16 +90,52 @@ func reset_stream() -> void:
 
 
 func distance_from_gateway(position_3d: Vector3) -> float:
+	var projection := project_position(position_3d)
+	return 0.0 if projection.is_empty() else float(projection["distance"])
+
+
+func sample_distance(distance: float) -> Dictionary:
+	if distance < 0.0 or _chunks.is_empty():
+		return {}
+	var logical_index := int(floor(distance / CHUNK_LENGTH))
+	for record in _chunks:
+		if int(record["index"]) != logical_index:
+			continue
+		var from: Vector3 = record["from"]
+		var to: Vector3 = record["to"]
+		var direction := (to - from).normalized()
+		var t := clampf((distance - float(logical_index) * CHUNK_LENGTH) / CHUNK_LENGTH, 0.0, 1.0)
+		return {
+			"position": from.lerp(to, t),
+			"direction": direction,
+			"distance": distance,
+			"chunk_index": logical_index,
+		}
+	return {}
+
+
+func project_position(position_3d: Vector3) -> Dictionary:
 	if _chunks.is_empty():
-		return 0.0
+		return {}
 	var record := _nearest_chunk(position_3d)
 	if record.is_empty():
-		return 0.0
+		return {}
 	var from: Vector3 = record["from"]
 	var to: Vector3 = record["to"]
 	var segment := to - from
-	var t := clampf((position_3d - from).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
-	return (float(record["index"]) + t) * CHUNK_LENGTH
+	var direction := segment.normalized()
+	var flat_position := Vector3(position_3d.x, 0.0, position_3d.z)
+	var t := clampf((flat_position - from).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
+	var closest := from + segment * t
+	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
+	return {
+		"position": closest,
+		"direction": direction,
+		"distance": (float(record["index"]) + t) * CHUNK_LENGTH,
+		"lateral_distance": flat_position.distance_to(closest),
+		"signed_lateral": (flat_position - closest).dot(perpendicular),
+		"chunk_index": int(record["index"]),
+	}
 
 
 func active_chunk_count() -> int:
@@ -133,6 +173,7 @@ func _append_chunk() -> void:
 	_build_ground(chunk, center, yaw)
 	_build_markings(chunk, from, to, direction, yaw)
 	_build_trees(chunk, logical_index, from, to, direction)
+	_build_roadside_variation(chunk, logical_index, from, to, direction, yaw)
 
 	_chunks.append({
 		"node": chunk,
@@ -231,6 +272,7 @@ func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3,
 	var dark_lower_transforms: Array[Transform3D] = []
 	var dark_upper_transforms: Array[Transform3D] = []
 	var ao_transforms: Array[Transform3D] = []
+	var rock_transforms: Array[Transform3D] = []
 
 	for tree_index in 18:
 		var side := -1.0 if tree_index % 2 == 0 else 1.0
@@ -238,7 +280,7 @@ func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3,
 		var offset := random.randf_range(8.4, TERRAIN_WIDTH * 0.45)
 		var along_jitter := direction * random.randf_range(-2.1, 2.1)
 		var position_3d := from.lerp(to, t) + perpendicular * offset * side + along_jitter
-		var scale_value := random.randf_range(0.72, 1.23)
+		var scale_value := random.randf_range(0.98, 1.55)
 		var rotation := Basis(Vector3.UP, random.randf_range(0.0, TAU))
 		var scale_basis := rotation.scaled(Vector3.ONE * scale_value)
 		trunk_transforms.append(Transform3D(scale_basis, position_3d + Vector3.UP * 1.18 * scale_value))
@@ -253,6 +295,18 @@ func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3,
 		ao_transforms.append(Transform3D(Basis.IDENTITY.scaled(Vector3(1.18, 1.0, 1.18) * scale_value), position_3d + Vector3.UP * 0.012))
 		if tree_index % 5 == 0 and offset < 14.0:
 			_add_tree_collider(chunk, position_3d, scale_value)
+	for rock_index in 6:
+		var rock_side := -1.0 if rock_index % 2 == 0 else 1.0
+		var rock_t := random.randf_range(0.06, 0.94)
+		var rock_offset := random.randf_range(6.6, TERRAIN_WIDTH * 0.43)
+		var rock_position := from.lerp(to, rock_t) + perpendicular * rock_offset * rock_side
+		var rock_scale := Vector3(
+			random.randf_range(0.55, 1.35),
+			random.randf_range(0.45, 1.05),
+			random.randf_range(0.60, 1.45)
+		)
+		var rock_basis := Basis(Vector3.UP, random.randf_range(0.0, TAU)).scaled(rock_scale)
+		rock_transforms.append(Transform3D(rock_basis, rock_position + Vector3.UP * 0.34 * rock_scale.y))
 
 	_add_multimesh(chunk, "TreeTrunks", _trunk_mesh, _trunk_material, trunk_transforms, false, 235.0)
 	_add_multimesh(chunk, "TreeFoliageLightLower", _lower_foliage_mesh, _foliage_material, light_lower_transforms, false, 235.0)
@@ -260,6 +314,24 @@ func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3,
 	_add_multimesh(chunk, "TreeFoliageDarkLower", _lower_foliage_mesh, _foliage_dark_material, dark_lower_transforms, false, 235.0)
 	_add_multimesh(chunk, "TreeFoliageDarkUpper", _upper_foliage_mesh, _foliage_dark_material, dark_upper_transforms, false, 235.0)
 	_add_multimesh(chunk, "TreeBaseAO", _tree_ao_mesh, _ambient_occlusion_material, ao_transforms, false, 180.0)
+	_add_multimesh(chunk, "RoadsideRocks", _rock_mesh, _rock_material, rock_transforms, false, 210.0)
+
+
+func _build_roadside_variation(
+	chunk: Node3D,
+	logical_index: int,
+	from: Vector3,
+	to: Vector3,
+	direction: Vector3,
+	yaw: float
+) -> void:
+	if logical_index % 5 != 2:
+		return
+	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
+	var side := -1.0 if logical_index % 10 == 2 else 1.0
+	var sign_position := from.lerp(to, 0.66) + perpendicular * 5.7 * side
+	_add_box_mesh(chunk, "WayfindingPost", Vector3(0.14, 1.75, 0.14), sign_position + Vector3.UP * 0.88, _sign_post_material, yaw)
+	_add_box_mesh(chunk, "ReflectiveWayfindingSign", Vector3(1.28, 0.62, 0.10), sign_position + Vector3.UP * 1.72, _wayfinding_material, yaw)
 
 
 func _add_tree_collider(chunk: Node3D, position_3d: Vector3, scale_value: float) -> void:
@@ -366,6 +438,9 @@ func _build_shared_resources() -> void:
 	_trunk_material = _material(Color("382c27"), 0.96)
 	_foliage_material = _material(Color("17312d"), 0.97)
 	_foliage_dark_material = _material(Color("102622"), 0.98)
+	_rock_material = _material(Color("465052"), 0.98)
+	_sign_post_material = _material(Color("505a60"), 0.88)
+	_wayfinding_material = _emissive_material(Color("a57437"), Color("ffc36c"), 0.52, 0.54)
 	_ambient_occlusion_material = _material(Color("070b0c"), 1.0)
 	_ambient_occlusion_material.vertex_color_use_as_albedo = true
 	_ambient_occlusion_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -391,6 +466,11 @@ func _build_shared_resources() -> void:
 	_upper_foliage_mesh.height = 2.72
 	_upper_foliage_mesh.radial_segments = 8
 	_tree_ao_mesh = MeshFactory.soft_disc(18)
+	_rock_mesh = CylinderMesh.new()
+	_rock_mesh.top_radius = 0.28
+	_rock_mesh.bottom_radius = 0.68
+	_rock_mesh.height = 0.72
+	_rock_mesh.radial_segments = 7
 
 
 func _material(color: Color, roughness: float) -> StandardMaterial3D:

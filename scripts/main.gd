@@ -4,6 +4,7 @@ const CarScript := preload("res://scripts/car.gd")
 const CameraScript := preload("res://scripts/follow_camera.gd")
 const MeshFactory := preload("res://scripts/low_poly_mesh.gd")
 const EndlessRoadScript := preload("res://scripts/endless_road.gd")
+const TrafficManagerScript := preload("res://scripts/traffic_manager.gd")
 const SAVE_PATH := "user://cozy_roads.cfg"
 
 const WHITE := Color("d8dadb")
@@ -12,9 +13,13 @@ const MID_GRAY := Color("777b7d")
 const DARK_GRAY := Color("45494b")
 const BLACK := Color("292c2e")
 const DINER_POSITION := Vector3(43.0, 0.0, -281.0)
+const OVERLOOK_POSITION := Vector3(-26.0, 0.0, -204.0)
+const COVERED_BRIDGE_POSITION := Vector3(5.0, 0.0, -254.5)
+const CABIN_POSITION := Vector3(-14.0, 0.0, -351.0)
 
 var player_car: CozyCar
 var endless_road: CozyEndlessRoad
+var traffic_manager: Node3D
 var telemetry_label: Label
 var scene_environment: Environment
 var white_reflector_material: StandardMaterial3D
@@ -59,6 +64,14 @@ func _ready() -> void:
 	endless_road.start_point = scenic_route_points[-1]
 	endless_road.start_direction = (scenic_route_points[-1] - scenic_route_points[-2]).normalized()
 	add_child(endless_road)
+
+	traffic_manager = TrafficManagerScript.new()
+	traffic_manager.name = "TrafficManager"
+	traffic_manager.target = player_car
+	traffic_manager.endless_road = endless_road
+	traffic_manager.scenic_points = scenic_route_points.duplicate()
+	traffic_manager.scenic_total_length = route_total_length
+	add_child(traffic_manager)
 
 	var camera := CozyFollowCamera.new()
 	camera.name = "FollowCamera"
@@ -113,6 +126,8 @@ func _update_drive_progress() -> void:
 		route_finished = false
 		if is_instance_valid(endless_road):
 			endless_road.reset_stream()
+		if is_instance_valid(traffic_manager):
+			traffic_manager.reset_traffic()
 		_save_progress()
 	elif planar_distance < 2.0:
 		trip_distance += planar_distance
@@ -431,6 +446,9 @@ func _build_scenic_route() -> void:
 	_build_scenic_guardrails()
 	_build_utility_line()
 	_build_roadside_diner()
+	_build_scenic_overlook()
+	_build_covered_bridge()
+	_build_forest_cabin()
 	_build_distant_hills()
 	_build_route_finish()
 
@@ -465,10 +483,17 @@ func _build_scenic_forest() -> void:
 			for side in [-1.0, 1.0]:
 				var offset := 7.6 + random.randf_range(0.0, 8.5)
 				var tree_position: Vector3 = from.lerp(to, clampf(t, 0.04, 0.96)) + perpendicular * offset * side
-				# Leave a generous clearing for the roadside stop.
-				if tree_position.distance_to(Vector3(44.0, 0.0, -280.0)) < 30.0:
+				# Leave deliberate clearings around each handcrafted roadside place.
+				if (
+					tree_position.distance_to(DINER_POSITION) < 30.0
+					or tree_position.distance_to(OVERLOOK_POSITION) < 18.0
+					or tree_position.distance_to(COVERED_BRIDGE_POSITION) < 17.0
+					or tree_position.distance_to(CABIN_POSITION) < 19.0
+				):
 					continue
-				_queue_pine_tree(tree_position, random.randf_range(0.78, 1.28), random.randf() > 0.52)
+				# Mature roadside pines are an important scale reference beside the
+				# full-size pickup; the old 4-7 m range made the truck read oversized.
+				_queue_pine_tree(tree_position, random.randf_range(1.08, 1.62), random.randf() > 0.52)
 	_finish_pine_tree_batches()
 
 
@@ -673,8 +698,8 @@ func _build_utility_line() -> void:
 	for index in pole_positions.size() - 1:
 		_add_cylinder_between(
 			"UtilityWire",
-			pole_positions[index] + Vector3.UP * 6.55,
-			pole_positions[index + 1] + Vector3.UP * 6.55,
+			pole_positions[index] + Vector3.UP * 7.85,
+			pole_positions[index + 1] + Vector3.UP * 7.85,
 			0.035,
 			_material(Color("11171b"))
 		)
@@ -693,19 +718,19 @@ func _add_utility_pole(position_3d: Vector3, warm_lamp: bool) -> void:
 	var cylinder := CylinderMesh.new()
 	cylinder.top_radius = 0.17
 	cylinder.bottom_radius = 0.25
-	cylinder.height = 6.8
+	cylinder.height = 8.2
 	cylinder.radial_segments = 8
 	pole_mesh.mesh = cylinder
 	pole_mesh.material_override = utility_wood_material
-	pole_mesh.position.y = 3.4
+	pole_mesh.position.y = 4.1
 	pole.add_child(pole_mesh)
-	_add_mesh_box_child(pole, "Crossbar", Vector3(2.8, 0.13, 0.16), Vector3(0.0, 6.25, 0.0), utility_wood_material, 0.035)
+	_add_mesh_box_child(pole, "Crossbar", Vector3(3.0, 0.14, 0.17), Vector3(0.0, 7.55, 0.0), utility_wood_material, 0.035)
 	var collision_shape := CollisionShape3D.new()
 	var collision := CylinderShape3D.new()
 	collision.radius = 0.25
-	collision.height = 4.0
+	collision.height = 5.0
 	collision_shape.shape = collision
-	collision_shape.position.y = 2.0
+	collision_shape.position.y = 2.5
 	pole.add_child(collision_shape)
 	if warm_lamp:
 		var bulb := OmniLight3D.new()
@@ -715,9 +740,9 @@ func _add_utility_pole(position_3d: Vector3, warm_lamp: bool) -> void:
 		bulb.omni_range = 10.5
 		bulb.omni_attenuation = 1.45
 		bulb.shadow_enabled = false
-		bulb.position = Vector3(0.0, 5.65, 0.0)
+		bulb.position = Vector3(0.0, 6.85, 0.0)
 		pole.add_child(bulb)
-		_add_mesh_box_child(pole, "LampGlow", Vector3(0.34, 0.22, 0.34), Vector3(0.0, 5.65, 0.0), _emissive_material(Color("d89c55"), Color("ffd48d"), 1.15, 0.35), 0.055)
+		_add_mesh_box_child(pole, "LampGlow", Vector3(0.34, 0.22, 0.34), Vector3(0.0, 6.85, 0.0), _emissive_material(Color("d89c55"), Color("ffd48d"), 1.15, 0.35), 0.055)
 
 
 func _add_cylinder_between(node_name: String, from: Vector3, to: Vector3, radius: float, material: Material) -> void:
@@ -833,6 +858,133 @@ func _build_roadside_diner() -> void:
 		1.05
 	)
 	_add_drive_trigger("DinerArrival", DINER_POSITION + Vector3.UP * 1.5, Vector3(22.0, 3.0, 18.0), &"_on_diner_entered")
+
+
+func _build_scenic_overlook() -> void:
+	# A quiet pull-off on the outside of the first forest bend. Human-scale
+	# furniture and a telescope reinforce the world scale without another task.
+	var lot_rotation := Vector3(0.0, deg_to_rad(-12.0), 0.0)
+	_add_visual_box(
+		"OverlookGravel",
+		Vector3(18.0, 0.07, 11.0),
+		OVERLOOK_POSITION + Vector3.UP * 0.045,
+		Color("4c443d"),
+		lot_rotation
+	)
+	_add_static_box_rotated(
+		"OverlookSafetyRail",
+		Vector3(0.20, 0.76, 10.5),
+		OVERLOOK_POSITION + Vector3(-8.2, 0.48, 0.0),
+		Vector3.ZERO,
+		Color("697278"),
+		true,
+		0.045
+	)
+	var bench_wood := _material(Color("72513e"))
+	_add_mesh_box_world("OverlookBenchSeat", Vector3(0.72, 0.16, 2.8), OVERLOOK_POSITION + Vector3(-3.8, 0.58, -0.7), Vector3.ZERO, bench_wood, 0.035)
+	_add_mesh_box_world("OverlookBenchBack", Vector3(0.16, 0.82, 2.8), OVERLOOK_POSITION + Vector3(-4.12, 0.96, -0.7), Vector3(0.0, 0.0, deg_to_rad(-8.0)), bench_wood, 0.035)
+	for z_offset in [-1.0, 1.0]:
+		_add_visual_box("OverlookBenchLeg", Vector3(0.15, 0.55, 0.16), OVERLOOK_POSITION + Vector3(-3.8, 0.29, -0.7 + z_offset), Color("4a3d35"))
+	_add_static_box_rotated("TelescopePedestal", Vector3(0.22, 1.35, 0.22), OVERLOOK_POSITION + Vector3(-5.8, 0.72, 2.4), Vector3.ZERO, Color("555e64"), true, 0.045)
+	_add_mesh_box_world("OverlookTelescope", Vector3(0.36, 0.34, 1.25), OVERLOOK_POSITION + Vector3(-6.0, 1.55, 2.4), Vector3(0.0, deg_to_rad(90.0), deg_to_rad(-8.0)), _material(Color("303a40")), 0.06)
+	_add_emissive_box("OverlookMap", Vector3(0.10, 1.05, 2.1), OVERLOOK_POSITION + Vector3(-2.6, 1.16, 3.6), Vector3.ZERO, Color("8a7659"), Color("d7bd82"), 0.34)
+	_add_static_box_rotated("OverlookLampPole", Vector3(0.16, 3.0, 0.16), OVERLOOK_POSITION + Vector3(-1.4, 1.5, -3.8), Vector3.ZERO, Color("41484d"), true, 0.035)
+	_add_emissive_box("OverlookLampGlow", Vector3(0.34, 0.28, 0.34), OVERLOOK_POSITION + Vector3(-1.4, 2.88, -3.8), Vector3.ZERO, Color("cb8c4f"), Color("ffd08a"), 1.2)
+	var lamp := OmniLight3D.new()
+	lamp.name = "OverlookWarmLight"
+	lamp.light_color = Color("ffc27a")
+	lamp.light_energy = 0.82
+	lamp.omni_range = 9.0
+	lamp.omni_attenuation = 1.5
+	lamp.shadow_enabled = false
+	lamp.position = OVERLOOK_POSITION + Vector3(-1.4, 2.88, -3.8)
+	add_child(lamp)
+
+
+func _build_covered_bridge() -> void:
+	var direction := (scenic_route_points[5] - scenic_route_points[4]).normalized()
+	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
+	var yaw := atan2(direction.x, direction.z)
+	var rotation_3d := Vector3(0.0, yaw, 0.0)
+	var wood := Color("55392e")
+	var dark_wood := Color("342824")
+	for side in [-1.0, 1.0]:
+		_add_static_box_rotated(
+			"BridgeSideRail",
+			Vector3(0.28, 0.82, 14.4),
+			COVERED_BRIDGE_POSITION + perpendicular * 4.72 * side + Vector3.UP * 0.58,
+			rotation_3d,
+			wood,
+			true,
+			0.05
+		)
+		_add_visual_box("BridgeUpperRail", Vector3(0.24, 0.28, 14.5), COVERED_BRIDGE_POSITION + perpendicular * 4.72 * side + Vector3.UP * 3.25, dark_wood, rotation_3d)
+		for along in [-6.6, 0.0, 6.6]:
+			_add_static_box_rotated(
+				"BridgePost",
+				Vector3(0.38, 3.65, 0.38),
+				COVERED_BRIDGE_POSITION + perpendicular * 4.72 * side + direction * along + Vector3.UP * 2.05,
+				rotation_3d,
+				wood,
+				true,
+				0.055
+			)
+	_add_visual_box("BridgeRoof", Vector3(10.3, 0.48, 14.9), COVERED_BRIDGE_POSITION + Vector3.UP * 4.12, Color("432b27"), rotation_3d)
+	_add_visual_box("BridgeRoofRidge", Vector3(0.34, 0.32, 15.1), COVERED_BRIDGE_POSITION + Vector3.UP * 4.48, Color("2c2221"), rotation_3d)
+	for along in [-6.8, 6.8]:
+		_add_visual_box("BridgeCrossbeam", Vector3(9.7, 0.34, 0.36), COVERED_BRIDGE_POSITION + direction * along + Vector3.UP * 3.64, dark_wood, rotation_3d)
+	for along in [-3.8, 3.8]:
+		var lantern_position: Vector3 = COVERED_BRIDGE_POSITION + direction * float(along) + Vector3.UP * 3.28
+		_add_emissive_box("BridgeLantern", Vector3(0.30, 0.34, 0.30), lantern_position, rotation_3d, Color("bd8146"), Color("ffd08a"), 1.25)
+		var lantern := OmniLight3D.new()
+		lantern.name = "BridgeWarmLight"
+		lantern.light_color = Color("ffc078")
+		lantern.light_energy = 0.68
+		lantern.omni_range = 7.5
+		lantern.omni_attenuation = 1.52
+		lantern.shadow_enabled = false
+		lantern.position = lantern_position
+		add_child(lantern)
+
+
+func _build_forest_cabin() -> void:
+	var cabin_body := _add_static_box_rotated(
+		"ForestCabin",
+		Vector3(8.0, 3.7, 6.2),
+		CABIN_POSITION + Vector3.UP * 1.85,
+		Vector3.ZERO,
+		Color("6a4937"),
+		true,
+		0.10
+	)
+	cabin_body.collision_layer = 1
+	var roof_material := _material(Color("412d2a"))
+	_add_mesh_box_world("CabinRoofLeft", Vector3(4.8, 0.34, 7.1), CABIN_POSITION + Vector3(-1.8, 4.06, 0.0), Vector3(0.0, 0.0, deg_to_rad(-13.0)), roof_material, 0.065)
+	_add_mesh_box_world("CabinRoofRight", Vector3(4.8, 0.34, 7.1), CABIN_POSITION + Vector3(1.8, 4.06, 0.0), Vector3(0.0, 0.0, deg_to_rad(13.0)), roof_material, 0.065)
+	_add_visual_box("CabinPorch", Vector3(2.8, 0.18, 6.0), CABIN_POSITION + Vector3(5.25, 0.18, 0.0), Color("594133"))
+	_add_visual_box("CabinDoor", Vector3(0.10, 2.35, 1.25), CABIN_POSITION + Vector3(4.03, 1.24, 0.0), Color("342b28"))
+	for z_offset in [-2.0, 2.0]:
+		_add_emissive_box("CabinWindow", Vector3(0.10, 1.18, 1.35), CABIN_POSITION + Vector3(4.05, 2.15, z_offset), Vector3.ZERO, Color("c3935c"), Color("ffbd70"), 1.18)
+	_add_static_box_rotated("CabinChimney", Vector3(0.72, 2.2, 0.72), CABIN_POSITION + Vector3(-2.2, 4.42, 1.4), Vector3.ZERO, Color("49413d"), true, 0.065)
+
+	var fire_position := CABIN_POSITION + Vector3(8.5, 0.0, 4.4)
+	for log_angle in [0.0, 60.0, -60.0]:
+		_add_visual_box("CampfireLog", Vector3(0.28, 0.24, 1.65), fire_position + Vector3.UP * 0.18, Color("443129"), Vector3(0.0, deg_to_rad(log_angle), 0.0))
+	_add_emissive_box("CampfireGlow", Vector3(0.62, 0.82, 0.62), fire_position + Vector3.UP * 0.72, Vector3(0.0, deg_to_rad(45.0), 0.0), Color("d06135"), Color("ff9c52"), 1.6)
+	var fire_light := OmniLight3D.new()
+	fire_light.name = "CampfireLight"
+	fire_light.light_color = Color("ff9e59")
+	fire_light.light_energy = 1.0
+	fire_light.omni_range = 9.5
+	fire_light.omni_attenuation = 1.42
+	fire_light.shadow_enabled = false
+	fire_light.position = fire_position + Vector3.UP * 1.0
+	add_child(fire_light)
+
+	# A mailbox near the shoulder adds another immediately recognizable scale cue.
+	var mailbox_position := CABIN_POSITION + Vector3(15.5, 0.0, 1.5)
+	_add_static_box_rotated("CabinMailboxPost", Vector3(0.16, 1.25, 0.16), mailbox_position + Vector3.UP * 0.63, Vector3.ZERO, Color("4b4038"), true, 0.035)
+	_add_mesh_box_world("CabinMailbox", Vector3(0.56, 0.48, 1.05), mailbox_position + Vector3.UP * 1.34, Vector3.ZERO, _material(Color("7b5143")), 0.08)
 
 
 func _build_route_finish() -> void:
