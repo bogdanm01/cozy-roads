@@ -8,10 +8,6 @@ const TrafficManagerScript := preload("res://scripts/traffic_manager.gd")
 const SAVE_PATH := "user://cozy_roads.cfg"
 
 const WHITE := Color("d8dadb")
-const LIGHT_GRAY := Color("a8abad")
-const MID_GRAY := Color("777b7d")
-const DARK_GRAY := Color("45494b")
-const BLACK := Color("292c2e")
 const ROAD_WIDTH := 10.625
 const ROAD_CURVE_SUBDIVISIONS := 10
 const DINER_POSITION := Vector3(43.0, 0.0, -281.0)
@@ -60,10 +56,19 @@ var reset_was_pressed := false
 func _ready() -> void:
 	_load_progress()
 	_build_environment()
-	_build_test_field()
+	_build_drive_world()
 	player_car = CozyCar.new()
 	player_car.name = "PlayerCar"
-	player_car.position = Vector3(19.0, 0.0, -111.0)
+	var spawn_index := 2
+	var spawn_position := scenic_route_points[spawn_index]
+	var spawn_direction := (
+		scenic_route_points[spawn_index + 1]
+		- scenic_route_points[spawn_index]
+	).normalized()
+	player_car.transform = Transform3D(
+		Basis.looking_at(spawn_direction, Vector3.UP),
+		spawn_position
+	)
 	add_child(player_car)
 	last_car_position = player_car.global_position
 
@@ -88,6 +93,12 @@ func _ready() -> void:
 	add_child(camera)
 	camera.current = true
 	_build_ui()
+
+
+func _build_drive_world() -> void:
+	_build_scenic_route()
+	_finish_curved_road_batches()
+	_finish_road_reflectors()
 
 
 func _process(_delta: float) -> void:
@@ -266,165 +277,6 @@ void sky() {
 	return material
 
 
-func _build_test_field() -> void:
-	_add_static_box("Base", Vector3(220.0, 0.5, 240.0), Vector3(0.0, -0.25, -45.0), MID_GRAY, true)
-	_add_static_box("DrivingPad", Vector3(104.0, 0.06, 180.0), Vector3(0.0, 0.03, -45.0), DARK_GRAY, false)
-
-	# Ten-metre reference grid.
-	for x in range(-50, 51, 10):
-		_add_visual_box("GridLine", Vector3(0.055, 0.015, 180.0), Vector3(float(x), 0.065, -45.0), LIGHT_GRAY)
-	for z in range(-130, 46, 10):
-		_add_visual_box("GridLine", Vector3(104.0, 0.015, 0.055), Vector3(0.0, 0.065, float(z)), LIGHT_GRAY)
-
-	_build_ramp_course()
-	_build_side_slope()
-	_build_road_section()
-	_build_scenic_route()
-
-	# Closely-spaced transverse strips exercise all four dampers in sequence.
-	for index in 12:
-		_add_suspension_strip(
-			Vector3(0.0, 0.0, 2.0 - index * 0.72),
-			Vector2(10.0, 0.18),
-			0.10 if index % 2 == 0 else 0.14,
-			LIGHT_GRAY
-		)
-
-	# Staggered half-width strips make the truck articulate left-to-right.
-	for index in 8:
-		var strip_x := -2.5 if index % 2 == 0 else 2.5
-		_add_suspension_strip(
-			Vector3(strip_x, 0.0, -50.0 - index * 2.1),
-			Vector2(4.8, 0.55),
-			0.18,
-			MID_GRAY
-		)
-
-	# Main lane and center line.
-	_add_visual_box("LaneLeft", Vector3(0.14, 0.02, 168.0), Vector3(-5.0, 0.075, -43.0), WHITE)
-	_add_visual_box("LaneRight", Vector3(0.14, 0.02, 168.0), Vector3(5.0, 0.075, -43.0), WHITE)
-	for z in range(-122, 40, 8):
-		_add_visual_box("CenterDash", Vector3(0.11, 0.022, 3.8), Vector3(0.0, 0.078, float(z)), WHITE)
-	_build_main_lane_reflectors()
-
-	# Slalom for low-speed steering tests.
-	for index in 7:
-		var marker_x := -2.6 if index % 2 == 0 else 2.6
-		_add_marker(Vector3(marker_x, 0.0, 12.0 - index * 9.0), index)
-
-	# Braking box and a broad turning circle.
-	_add_outline_rect(Vector3(26.0, 0.08, -75.0), Vector2(16.0, 28.0))
-	_add_turning_circle(Vector3(-28.0, 0.08, -82.0), 13.0)
-
-	# Alternating boundary blocks make speed and camera motion easy to read.
-	for index in 18:
-		var z_position := 38.0 - index * 10.0
-		var color := WHITE if index % 2 == 0 else BLACK
-		_add_static_box("Boundary", Vector3(2.0, 0.8, 9.5), Vector3(-53.0, 0.2, z_position), color, true)
-		_add_static_box("Boundary", Vector3(2.0, 0.8, 9.5), Vector3(53.0, 0.2, z_position), color, true)
-	_finish_curved_road_batches()
-	_finish_road_reflectors()
-
-
-func _add_marker(position_3d: Vector3, index: int) -> void:
-	var marker := MeshInstance3D.new()
-	marker.name = "SlalomMarker%d" % index
-	var cylinder := CylinderMesh.new()
-	cylinder.top_radius = 0.22
-	cylinder.bottom_radius = 0.65
-	cylinder.height = 1.2
-	cylinder.radial_segments = 12
-	marker.mesh = cylinder
-	marker.material_override = _material(WHITE if index % 2 == 0 else BLACK)
-	marker.position = position_3d + Vector3.UP * 0.6
-	add_child(marker)
-
-
-func _add_outline_rect(center: Vector3, size: Vector2) -> void:
-	_add_visual_box("BrakeBox", Vector3(size.x, 0.025, 0.15), center + Vector3(0.0, 0.0, -size.y * 0.5), WHITE)
-	_add_visual_box("BrakeBox", Vector3(size.x, 0.025, 0.15), center + Vector3(0.0, 0.0, size.y * 0.5), WHITE)
-	_add_visual_box("BrakeBox", Vector3(0.15, 0.025, size.y), center + Vector3(-size.x * 0.5, 0.0, 0.0), WHITE)
-	_add_visual_box("BrakeBox", Vector3(0.15, 0.025, size.y), center + Vector3(size.x * 0.5, 0.0, 0.0), WHITE)
-
-
-func _add_turning_circle(center: Vector3, radius: float) -> void:
-	var segments := 48
-	for index in segments:
-		if index % 2 == 0:
-			continue
-		var angle := TAU * float(index) / float(segments)
-		var position_3d := center + Vector3(cos(angle) * radius, 0.0, sin(angle) * radius)
-		var tangent_rotation := Vector3(0.0, -angle, 0.0)
-		_add_visual_box("TurningCircle", Vector3(0.16, 0.025, 1.7), position_3d, WHITE, tangent_rotation)
-
-
-func _build_ramp_course() -> void:
-	# A low bridge-like ramp on the left side of the proving ground.
-	var ramp_angle := deg_to_rad(10.0)
-	_add_driveable_slab(
-		"RampUp",
-		Vector3(8.0, 0.28, 10.0),
-		Vector3(-23.0, 0.90, 4.0),
-		Vector3(ramp_angle, 0.0, 0.0),
-		Color("85898b")
-	)
-	_add_driveable_slab(
-		"RampCrest",
-		Vector3(8.0, 0.28, 10.5),
-		Vector3(-23.0, 1.76, -6.1),
-		Vector3.ZERO,
-		Color("8f9395")
-	)
-	_add_driveable_slab(
-		"RampDown",
-		Vector3(8.0, 0.28, 10.0),
-		Vector3(-23.0, 0.90, -16.2),
-		Vector3(-ramp_angle, 0.0, 0.0),
-		Color("85898b")
-	)
-	for marker in [[8.3, 0.16], [-0.8, 1.92], [-11.4, 1.92], [-20.4, 0.16]]:
-		_add_visual_box("RampMarker", Vector3(8.2, 0.035, 0.18), Vector3(-23.0, marker[1], marker[0]), WHITE)
-
-
-func _build_side_slope() -> void:
-	# Layer 2 lets suspension rays read the cross-slope without the main body
-	# collider catching on its shallow leading edge.
-	var slope := StaticBody3D.new()
-	slope.name = "SideSlope"
-	slope.collision_layer = 2
-	slope.collision_mask = 0
-	slope.position = Vector3(-28.0, 0.13, -47.0)
-	slope.rotation.z = deg_to_rad(2.5)
-	add_child(slope)
-	var size := Vector3(10.0, 0.18, 22.0)
-	var mesh_instance := MeshInstance3D.new()
-	mesh_instance.mesh = MeshFactory.beveled_box(size, 0.035)
-	mesh_instance.material_override = _material(Color("6d7173"))
-	slope.add_child(mesh_instance)
-	var collision_shape := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = size
-	collision_shape.shape = shape
-	slope.add_child(collision_shape)
-	_add_visual_box("SlopeEntry", Vector3(10.4, 0.025, 0.22), Vector3(-28.0, 0.11, -35.9), WHITE)
-	_add_visual_box("SlopeExit", Vector3(10.4, 0.025, 0.22), Vector3(-28.0, 0.11, -58.1), WHITE)
-
-
-func _build_road_section() -> void:
-	var control_points: Array[Vector3] = [
-		Vector3(18.0, 0.0, 35.0),
-		Vector3(18.0, 0.0, 12.0),
-		Vector3(27.0, 0.0, -10.0),
-		Vector3(34.0, 0.0, -34.0),
-		Vector3(29.0, 0.0, -58.0),
-		Vector3(19.0, 0.0, -84.0),
-		Vector3(19.0, 0.0, -122.0),
-	]
-	var curve_points := _sample_catmull_rom_path(control_points, ROAD_CURVE_SUBDIVISIONS)
-	for index in curve_points.size() - 1:
-		_add_road_test_segment(curve_points[index], curve_points[index + 1], ROAD_WIDTH)
-
-
 func _sample_catmull_rom_path(
 	control_points: Array[Vector3],
 	subdivisions: int,
@@ -465,10 +317,8 @@ func _build_scenic_route() -> void:
 	# night drive. A broad hidden ground slab keeps the first art pass reliable.
 	_add_static_box(
 		"ScenicGround",
-		Vector3(190.0, 0.5, 290.0),
-		# Keep the scenic surface 2 cm below the proving-ground slab where the
-		# two regions overlap. Coplanar faces caused large flickering triangles.
-		Vector3(0.0, -0.27, -285.0),
+		Vector3(190.0, 0.5, 360.0),
+		Vector3(0.0, -0.27, -260.0),
 		Color("18241f"),
 		true
 	)
@@ -1221,16 +1071,6 @@ func _add_road_multimesh(
 	add_child(instance)
 
 
-func _build_main_lane_reflectors() -> void:
-	var index := 0
-	for z in range(-124, 41, 5):
-		for side in [-1.0, 1.0]:
-			_add_road_reflector(Vector3(side * 4.86, 0.11, float(z)), Vector3.ZERO, false)
-		if index % 2 == 0:
-			_add_road_reflector(Vector3(0.0, 0.11, float(z)), Vector3.ZERO, true)
-		index += 1
-
-
 func _add_road_reflector(position_3d: Vector3, rotation_3d: Vector3, amber: bool) -> void:
 	if not is_instance_valid(white_reflector_material):
 		white_reflector_material = _emissive_material(Color("bcc9cb"), Color("d8f3ff"), 0.72, 0.42)
@@ -1263,45 +1103,6 @@ func _add_reflector_multimesh(node_name: String, transforms: Array[Transform3D],
 	instance.multimesh = multimesh
 	instance.material_override = material
 	add_child(instance)
-
-
-func _add_driveable_slab(node_name: String, size: Vector3, position_3d: Vector3, rotation_3d: Vector3, color: Color) -> void:
-	var body := StaticBody3D.new()
-	body.name = node_name
-	body.position = position_3d
-	body.rotation = rotation_3d
-	body.collision_layer = 1
-	body.collision_mask = 0
-	add_child(body)
-	var mesh_instance := MeshInstance3D.new()
-	mesh_instance.mesh = MeshFactory.beveled_box(size, 0.055)
-	mesh_instance.material_override = _material(color)
-	body.add_child(mesh_instance)
-	var collision_shape := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = size
-	collision_shape.shape = shape
-	body.add_child(collision_shape)
-
-
-func _add_suspension_strip(position_3d: Vector3, footprint: Vector2, height: float, color: Color) -> void:
-	var strip := StaticBody3D.new()
-	strip.name = "SuspensionStrip"
-	# Layer 2 is sampled by the wheel rays but ignored by the main car collider.
-	strip.collision_layer = 2
-	strip.collision_mask = 0
-	strip.position = position_3d + Vector3.UP * height * 0.5
-	add_child(strip)
-	var size := Vector3(footprint.x, height, footprint.y)
-	var mesh_instance := MeshInstance3D.new()
-	mesh_instance.mesh = MeshFactory.beveled_box(size, minf(0.025, height * 0.18))
-	mesh_instance.material_override = _material(color)
-	strip.add_child(mesh_instance)
-	var collision_shape := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = size
-	collision_shape.shape = shape
-	strip.add_child(collision_shape)
 
 
 func _build_ui() -> void:

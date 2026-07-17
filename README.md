@@ -4,19 +4,18 @@ A warm, low-poly endless night-driving game built with Godot 4.7.
 
 ## Playable MVP
 
-Start on the handling field, follow the scenic road, pull into the illuminated
-roadside diner for a stamp, and continue through the glowing gateway onto a
-deterministic endless road. Best trip distance and collected stamps persist
-between launches.
+Start directly on the scenic road, pull into the illuminated roadside diner for
+a stamp, and continue through the glowing gateway onto a deterministic endless
+road. Best trip distance and collected stamps persist between launches.
 
 The pickup uses custom weighty handling, terrain-aware body attitude, independent
 visual suspension, acceleration squat, braking dive, steering roll, headlights,
 brake lights, and procedural engine audio. The world includes a starry 9 PM sky,
-fog, reflective road studs, forest scenery, ramps, grooves, guardrails, utility
+fog, reflective road studs, forest scenery, guardrails, utility
 lights, and a GPU-batched streaming road that recycles old chunks. Catmull-Rom
-centerlines keep the proving-ground, scenic, and endless roads flowing through
-continuous bends; traffic, markings, barriers, and roadside props all follow
-the same sampled curves.
+centerlines keep the scenic and endless roads flowing through continuous bends;
+traffic, markings, barriers, and roadside props all follow the same sampled
+curves.
 
 Sparse two-way traffic shares both the scenic and endless roads. Five pooled
 low-poly cars use separate lanes, varied cruising speeds, safe following gaps,
