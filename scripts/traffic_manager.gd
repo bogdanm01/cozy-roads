@@ -4,7 +4,7 @@ extends Node3D
 const TrafficVehicleScript := preload("res://scripts/traffic_vehicle.gd")
 
 const VEHICLE_COUNT := 5
-const LANE_OFFSET := 1.82
+const LANE_OFFSET := 2.275
 const SAFE_FOLLOW_DISTANCE := 25.0
 const PLAYER_BRAKE_DISTANCE := 15.0
 const RECYCLE_BEHIND := 115.0

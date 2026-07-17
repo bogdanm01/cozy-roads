@@ -4,8 +4,8 @@ extends Node3D
 const MeshFactory := preload("res://scripts/low_poly_mesh.gd")
 
 const CHUNK_LENGTH := 48.0
-const ROAD_WIDTH := 8.5
-const SHOULDER_WIDTH := 11.8
+const ROAD_WIDTH := 10.625
+const SHOULDER_WIDTH := 14.75
 const TERRAIN_WIDTH := 46.0
 const INITIAL_CHUNKS := 8
 const CHUNKS_AHEAD := 8
@@ -329,7 +329,7 @@ func _build_roadside_variation(
 		return
 	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
 	var side := -1.0 if logical_index % 10 == 2 else 1.0
-	var sign_position := from.lerp(to, 0.66) + perpendicular * 5.7 * side
+	var sign_position := from.lerp(to, 0.66) + perpendicular * 7.125 * side
 	_add_box_mesh(chunk, "WayfindingPost", Vector3(0.14, 1.75, 0.14), sign_position + Vector3.UP * 0.88, _sign_post_material, yaw)
 	_add_box_mesh(chunk, "ReflectiveWayfindingSign", Vector3(1.28, 0.62, 0.10), sign_position + Vector3.UP * 1.72, _wayfinding_material, yaw)
 

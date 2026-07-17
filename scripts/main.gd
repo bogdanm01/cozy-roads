@@ -12,6 +12,7 @@ const LIGHT_GRAY := Color("a8abad")
 const MID_GRAY := Color("777b7d")
 const DARK_GRAY := Color("45494b")
 const BLACK := Color("292c2e")
+const ROAD_WIDTH := 10.625
 const DINER_POSITION := Vector3(43.0, 0.0, -281.0)
 const OVERLOOK_POSITION := Vector3(-26.0, 0.0, -204.0)
 const COVERED_BRIDGE_POSITION := Vector3(5.0, 0.0, -254.5)
@@ -411,7 +412,7 @@ func _build_road_section() -> void:
 		Vector3(19.0, 0.0, -122.0),
 	]
 	for index in points.size() - 1:
-		_add_road_test_segment(points[index], points[index + 1], 8.5)
+		_add_road_test_segment(points[index], points[index + 1], ROAD_WIDTH)
 
 
 func _build_scenic_route() -> void:
@@ -441,7 +442,7 @@ func _build_scenic_route() -> void:
 	route_total_length = 0.0
 	for index in scenic_route_points.size() - 1:
 		route_total_length += scenic_route_points[index].distance_to(scenic_route_points[index + 1])
-		_add_scenic_road_segment(scenic_route_points[index], scenic_route_points[index + 1], 8.5)
+		_add_scenic_road_segment(scenic_route_points[index], scenic_route_points[index + 1], ROAD_WIDTH)
 	_build_scenic_forest()
 	_build_scenic_guardrails()
 	_build_utility_line()
@@ -640,7 +641,7 @@ func _add_guardrail_segment(segment_index: int, side: float) -> void:
 	var distance := direction.length()
 	var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
 	var yaw := atan2(direction.x, direction.z)
-	var rail_center := (from + to) * 0.5 + perpendicular * 5.2 * side + Vector3.UP * 0.76
+	var rail_center := (from + to) * 0.5 + perpendicular * 6.5 * side + Vector3.UP * 0.76
 	_add_static_box_rotated(
 		"Guardrail",
 		Vector3(0.18, 0.28, distance - 1.2),
@@ -653,7 +654,7 @@ func _add_guardrail_segment(segment_index: int, side: float) -> void:
 	var post_count := maxi(2, int(distance / 3.5))
 	for post_index in post_count + 1:
 		var t := float(post_index) / float(post_count)
-		var post_position := from.lerp(to, t) + perpendicular * 5.2 * side + Vector3.UP * 0.45
+		var post_position := from.lerp(to, t) + perpendicular * 6.5 * side + Vector3.UP * 0.45
 		_add_visual_box("GuardrailPost", Vector3(0.18, 0.90, 0.18), post_position, Color("5f676c"), Vector3(0.0, yaw, 0.0))
 		if post_index % 2 == 0:
 			_add_road_reflector(post_position + Vector3.UP * 0.44, Vector3(0.0, yaw, 0.0), true)
@@ -669,7 +670,7 @@ func _add_chevron_marker(point_index: int) -> void:
 	var perpendicular := Vector3(tangent.z, 0.0, -tangent.x)
 	var turn_cross := incoming.x * outgoing.z - incoming.z * outgoing.x
 	var outside_side := 1.0 if turn_cross > 0.0 else -1.0
-	var marker_position := point + perpendicular * outside_side * 5.6
+	var marker_position := point + perpendicular * outside_side * 7.0
 	var yaw := atan2(incoming.x, incoming.z)
 	_add_visual_box("ChevronPole", Vector3(0.13, 1.55, 0.13), marker_position + Vector3.UP * 0.78, Color("4b5054"))
 	_add_emissive_box(
@@ -691,7 +692,7 @@ func _build_utility_line() -> void:
 		var point := scenic_route_points[index]
 		var direction := scenic_route_points[index + 1] - point
 		var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
-		var pole_position := point - perpendicular * 8.8
+		var pole_position := point - perpendicular * 11.0
 		pole_positions.append(pole_position)
 		var warm_lamp := pole_position.distance_to(Vector3(44.0, 0.0, -280.0)) < 75.0
 		_add_utility_pole(pole_position, warm_lamp)
@@ -912,27 +913,27 @@ func _build_covered_bridge() -> void:
 		_add_static_box_rotated(
 			"BridgeSideRail",
 			Vector3(0.28, 0.82, 14.4),
-			COVERED_BRIDGE_POSITION + perpendicular * 4.72 * side + Vector3.UP * 0.58,
+			COVERED_BRIDGE_POSITION + perpendicular * 5.90 * side + Vector3.UP * 0.58,
 			rotation_3d,
 			wood,
 			true,
 			0.05
 		)
-		_add_visual_box("BridgeUpperRail", Vector3(0.24, 0.28, 14.5), COVERED_BRIDGE_POSITION + perpendicular * 4.72 * side + Vector3.UP * 3.25, dark_wood, rotation_3d)
+		_add_visual_box("BridgeUpperRail", Vector3(0.24, 0.28, 14.5), COVERED_BRIDGE_POSITION + perpendicular * 5.90 * side + Vector3.UP * 3.25, dark_wood, rotation_3d)
 		for along in [-6.6, 0.0, 6.6]:
 			_add_static_box_rotated(
 				"BridgePost",
 				Vector3(0.38, 3.65, 0.38),
-				COVERED_BRIDGE_POSITION + perpendicular * 4.72 * side + direction * along + Vector3.UP * 2.05,
+				COVERED_BRIDGE_POSITION + perpendicular * 5.90 * side + direction * along + Vector3.UP * 2.05,
 				rotation_3d,
 				wood,
 				true,
 				0.055
 			)
-	_add_visual_box("BridgeRoof", Vector3(10.3, 0.48, 14.9), COVERED_BRIDGE_POSITION + Vector3.UP * 4.12, Color("432b27"), rotation_3d)
+	_add_visual_box("BridgeRoof", Vector3(12.875, 0.48, 14.9), COVERED_BRIDGE_POSITION + Vector3.UP * 4.12, Color("432b27"), rotation_3d)
 	_add_visual_box("BridgeRoofRidge", Vector3(0.34, 0.32, 15.1), COVERED_BRIDGE_POSITION + Vector3.UP * 4.48, Color("2c2221"), rotation_3d)
 	for along in [-6.8, 6.8]:
-		_add_visual_box("BridgeCrossbeam", Vector3(9.7, 0.34, 0.36), COVERED_BRIDGE_POSITION + direction * along + Vector3.UP * 3.64, dark_wood, rotation_3d)
+		_add_visual_box("BridgeCrossbeam", Vector3(12.125, 0.34, 0.36), COVERED_BRIDGE_POSITION + direction * along + Vector3.UP * 3.64, dark_wood, rotation_3d)
 	for along in [-3.8, 3.8]:
 		var lantern_position: Vector3 = COVERED_BRIDGE_POSITION + direction * float(along) + Vector3.UP * 3.28
 		_add_emissive_box("BridgeLantern", Vector3(0.30, 0.34, 0.30), lantern_position, rotation_3d, Color("bd8146"), Color("ffd08a"), 1.25)
@@ -996,7 +997,7 @@ func _build_route_finish() -> void:
 		_add_emissive_box(
 			"RouteFinishMarker",
 			Vector3(0.24, 1.45, 0.24),
-			finish_position + perpendicular * 4.5 * side + Vector3.UP * 0.73,
+			finish_position + perpendicular * 5.625 * side + Vector3.UP * 0.73,
 			Vector3(0.0, yaw, 0.0),
 			Color("5e7f83"),
 			Color("8de4d7"),
