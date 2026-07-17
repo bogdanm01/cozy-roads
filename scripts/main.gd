@@ -10,6 +10,9 @@ const SAVE_PATH := "user://cozy_roads.cfg"
 const WHITE := Color("d8dadb")
 const ROAD_WIDTH := 10.625
 const ROAD_CURVE_SUBDIVISIONS := 10
+const DAY_DURATION_SECONDS := 480.0
+const SKY_UPDATE_INTERVAL := 0.25
+const START_TIME_HOURS := 20.5
 const DINER_POSITION := Vector3(43.0, 0.0, -281.0)
 const OVERLOOK_POSITION := Vector3(-26.0, 0.0, -204.0)
 const COVERED_BRIDGE_POSITION := Vector3(5.0, 0.0, -254.5)
@@ -20,6 +23,12 @@ var endless_road: CozyEndlessRoad
 var traffic_manager: Node3D
 var telemetry_label: Label
 var scene_environment: Environment
+var sky_material: ShaderMaterial
+var sun_light: DirectionalLight3D
+var moon_light: DirectionalLight3D
+var time_of_day_hours := START_TIME_HOURS
+var sky_update_accumulator := 0.0
+var vehicle_lights_enabled := true
 var white_reflector_material: StandardMaterial3D
 var amber_reflector_material: StandardMaterial3D
 var road_reflector_mesh: ArrayMesh
@@ -101,13 +110,16 @@ func _build_drive_world() -> void:
 	_finish_road_reflectors()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_update_day_night_cycle(delta)
 	if is_instance_valid(player_car) and is_instance_valid(telemetry_label):
 		_update_drive_progress()
 		var speed_kmh := absf(player_car.speed) * 3.6
 		var steering_degrees := rad_to_deg(player_car.steering_angle)
 		var fps := Engine.get_frames_per_second()
 		var ao_mode := "SSAO" if is_instance_valid(scene_environment) and scene_environment.ssao_enabled else "FAST AO"
+		var time_text := _format_time_of_day()
+		var day_phase := _day_phase_name()
 		var route_percent := roundi(_calculate_route_progress(player_car.global_position) * 100.0)
 		var objective_text := "NEXT STOP  •  pull into the roadside diner  •  %d m" % roundi(player_car.global_position.distance_to(DINER_POSITION))
 		if diner_reached:
@@ -116,11 +128,21 @@ func _process(_delta: float) -> void:
 			var endless_distance := endless_road.distance_from_gateway(player_car.global_position) if is_instance_valid(endless_road) else 0.0
 			objective_text = "OPEN ROAD  •  %.1f km beyond gateway  •  stamps %d" % [endless_distance / 1000.0, roadside_stamps]
 		telemetry_label.text = (
-			"COZY ROADS  •  SCENIC NIGHT DRIVE  •  %d FPS  •  %s\n"
+			"COZY ROADS  •  SCENIC DRIVE  •  %s %s  •  %d FPS  •  %s\n"
 			+ "%3.0f km/h  •  steering %+.0f°  •  trip %.2f km  •  best %.2f km  •  route %d%%\n"
 			+ objective_text + "\n"
-			+ "WASD / arrows drive  •  LMB drag camera  •  R reset  •  O SSAO  •  M audio"
-		) % [fps, ao_mode, speed_kmh, steering_degrees, trip_distance / 1000.0, best_distance / 1000.0, route_percent]
+			+ "WASD / arrows drive  •  LMB drag camera  •  R reset  •  T +1 hour  •  O SSAO  •  M audio"
+		) % [
+			time_text,
+			day_phase,
+			fps,
+			ao_mode,
+			speed_kmh,
+			steering_degrees,
+			trip_distance / 1000.0,
+			best_distance / 1000.0,
+			route_percent,
+		]
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -131,6 +153,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_M:
 		audio_muted = not audio_muted
 		AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), audio_muted)
+		get_viewport().set_input_as_handled()
+	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_T:
+		set_time_of_day(time_of_day_hours + 1.0)
 		get_viewport().set_input_as_handled()
 
 
@@ -182,15 +207,12 @@ func _build_environment() -> void:
 	var environment := Environment.new()
 	scene_environment = environment
 
-	# Around 9 PM: the horizon still holds a trace of violet blue-hour light,
-	# while a shader-generated star field fills the darker upper sky.
 	var sky := Sky.new()
-	sky.sky_material = _build_night_sky_material()
+	sky_material = _build_day_night_sky_material()
+	sky.sky_material = sky_material
 	environment.background_mode = Environment.BG_SKY
 	environment.sky = sky
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = Color("5d718d")
-	environment.ambient_light_energy = 0.37
 	environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	environment.tonemap_mode = Environment.TONE_MAPPER_ACES
 	# Godot 4.7's Compatibility renderer supports a simplified SSAO pass.
@@ -199,40 +221,42 @@ func _build_environment() -> void:
 	environment.ssao_radius = 0.72
 	environment.ssao_intensity = 1.15
 
-	# Very light atmospheric perspective softens the far end of the course and
-	# prevents the black-and-white geometry from feeling cut out against the sky.
 	environment.fog_enabled = true
-	environment.fog_light_color = Color("354258")
-	environment.fog_light_energy = 0.46
-	environment.fog_density = 0.0032
 	environment.fog_sky_affect = 0.52
 	world_environment.environment = environment
 	add_child(world_environment)
 
-	# The sun is below the horizon at this point. A tiny shadowless afterglow
-	# retains the violet warmth without producing an implausible daytime shadow.
-	var afterglow := DirectionalLight3D.new()
-	afterglow.name = "HorizonAfterglow"
-	afterglow.light_color = Color("c77c72")
-	afterglow.light_energy = 0.10
-	afterglow.rotation_degrees = Vector3(-4.0, -42.0, 0.0)
-	afterglow.shadow_enabled = false
-	add_child(afterglow)
+	sun_light = DirectionalLight3D.new()
+	sun_light.name = "SunLight"
+	sun_light.shadow_enabled = true
+	sun_light.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	sun_light.directional_shadow_max_distance = 120.0
+	add_child(sun_light)
 
-	# A moon-blue, shadowless fill preserves detail on the truck's shaded side.
-	var fill := DirectionalLight3D.new()
-	fill.name = "MoonFillLight"
-	fill.light_color = Color("7799c8")
-	fill.light_energy = 0.36
-	fill.rotation_degrees = Vector3(-48.0, 142.0, 0.0)
-	fill.shadow_enabled = false
-	add_child(fill)
+	# The moon stays shadowless: it preserves readable silhouettes at night
+	# without recreating the implausibly strong nighttime shadows removed earlier.
+	moon_light = DirectionalLight3D.new()
+	moon_light.name = "MoonFillLight"
+	moon_light.light_color = Color("7799c8")
+	moon_light.shadow_enabled = false
+	add_child(moon_light)
+	set_time_of_day(START_TIME_HOURS)
 
 
-func _build_night_sky_material() -> ShaderMaterial:
+func _build_day_night_sky_material() -> ShaderMaterial:
 	var sky_shader := Shader.new()
 	sky_shader.code = """
 shader_type sky;
+
+uniform vec3 horizon_color = vec3(0.20, 0.22, 0.32);
+uniform vec3 zenith_color = vec3(0.025, 0.055, 0.12);
+uniform vec3 lower_horizon_color = vec3(0.10, 0.13, 0.18);
+uniform vec3 lower_sky_color = vec3(0.018, 0.026, 0.04);
+uniform vec3 sun_direction = vec3(0.0, -1.0, 0.0);
+uniform vec3 sun_color = vec3(1.0, 0.82, 0.62);
+uniform float sun_visibility = 0.0;
+uniform float moon_visibility = 1.0;
+uniform float star_visibility = 1.0;
 
 float star_hash(vec2 point) {
 	point = fract(point * vec2(123.34, 456.21));
@@ -243,13 +267,11 @@ float star_hash(vec2 point) {
 void sky() {
 	vec3 direction = normalize(EYEDIR);
 	float above_horizon = max(direction.y, 0.0);
-	vec3 horizon_color = vec3(0.20, 0.22, 0.32);
-	vec3 zenith_color = vec3(0.025, 0.055, 0.12);
 	vec3 color = mix(horizon_color, zenith_color, pow(above_horizon, 0.42));
 
 	if (direction.y < 0.0) {
 		float below_horizon = clamp(-direction.y, 0.0, 1.0);
-		color = mix(vec3(0.10, 0.13, 0.18), vec3(0.018, 0.026, 0.04), pow(below_horizon, 0.32));
+		color = mix(lower_horizon_color, lower_sky_color, pow(below_horizon, 0.32));
 	}
 
 	vec2 spherical_uv = vec2(
@@ -267,7 +289,17 @@ void sky() {
 	star *= smoothstep(0.025, 0.22, direction.y);
 	float brightness = mix(0.55, 1.55, star_hash(cell + 71.83));
 	vec3 star_tint = mix(vec3(0.68, 0.78, 1.0), vec3(1.0, 0.86, 0.68), star_hash(cell + 9.21));
-	color += star * brightness * star_tint;
+	color += star * brightness * star_tint * star_visibility;
+
+	float sun_alignment = dot(direction, normalize(sun_direction));
+	float sun_disc = smoothstep(0.99935, 0.99978, sun_alignment);
+	float sun_glow = pow(max(sun_alignment, 0.0), 48.0) * 0.20;
+	color += sun_color * (sun_disc * 1.9 + sun_glow) * sun_visibility;
+
+	float moon_alignment = dot(direction, normalize(-sun_direction));
+	float moon_disc = smoothstep(0.99945, 0.99982, moon_alignment);
+	float moon_glow = pow(max(moon_alignment, 0.0), 72.0) * 0.08;
+	color += vec3(0.60, 0.72, 0.92) * (moon_disc * 0.95 + moon_glow) * moon_visibility;
 
 	COLOR = color;
 }
@@ -275,6 +307,121 @@ void sky() {
 	var material := ShaderMaterial.new()
 	material.shader = sky_shader
 	return material
+
+
+func _update_day_night_cycle(delta: float) -> void:
+	var hours_per_second := 24.0 / DAY_DURATION_SECONDS
+	time_of_day_hours = fposmod(time_of_day_hours + delta * hours_per_second, 24.0)
+	sky_update_accumulator += delta
+	if sky_update_accumulator < SKY_UPDATE_INTERVAL:
+		return
+	sky_update_accumulator = fmod(sky_update_accumulator, SKY_UPDATE_INTERVAL)
+	_apply_day_night_state()
+
+
+func set_time_of_day(hours: float) -> void:
+	time_of_day_hours = fposmod(hours, 24.0)
+	sky_update_accumulator = 0.0
+	_apply_day_night_state()
+
+
+func _apply_day_night_state() -> void:
+	if not (
+		is_instance_valid(scene_environment)
+		and is_instance_valid(sky_material)
+		and is_instance_valid(sun_light)
+		and is_instance_valid(moon_light)
+	):
+		return
+
+	var solar_angle := (time_of_day_hours - 6.0) / 24.0 * TAU
+	var sun_height := sin(solar_angle) * sin(deg_to_rad(65.0))
+	var horizontal_length := sqrt(maxf(0.0, 1.0 - sun_height * sun_height))
+	var azimuth := deg_to_rad(-115.0) + time_of_day_hours / 24.0 * TAU
+	var sun_direction := Vector3(
+		cos(azimuth) * horizontal_length,
+		sun_height,
+		sin(azimuth) * horizontal_length
+	).normalized()
+
+	var daylight := smoothstep(-0.10, 0.18, sun_height)
+	var sunlight := smoothstep(-0.06, 0.16, sun_height)
+	var star_visibility := 1.0 - smoothstep(-0.20, 0.05, sun_height)
+	var twilight := 1.0 - smoothstep(0.0, 0.34, absf(sun_height))
+	var night := 1.0 - daylight
+
+	var night_horizon := Color("30384f")
+	var day_horizon := Color("91c2df")
+	var twilight_horizon := Color("e27852")
+	var horizon_color := night_horizon.lerp(day_horizon, daylight)
+	horizon_color = horizon_color.lerp(twilight_horizon, twilight * 0.82)
+
+	var night_zenith := Color("07142d")
+	var day_zenith := Color("296ba5")
+	var twilight_zenith := Color("493f6f")
+	var zenith_color := night_zenith.lerp(day_zenith, daylight)
+	zenith_color = zenith_color.lerp(twilight_zenith, twilight * 0.42)
+
+	var lower_horizon := Color("192332").lerp(Color("8eb4c6"), daylight)
+	lower_horizon = lower_horizon.lerp(Color("b55c47"), twilight * 0.60)
+	var lower_sky := Color("050a10").lerp(Color("536f76"), daylight)
+
+	var warm_sun := Color("ff9a65")
+	var noon_sun := Color("fff3d5")
+	var sun_color := warm_sun.lerp(noon_sun, smoothstep(0.05, 0.62, sun_height))
+
+	sky_material.set_shader_parameter("horizon_color", Vector3(horizon_color.r, horizon_color.g, horizon_color.b))
+	sky_material.set_shader_parameter("zenith_color", Vector3(zenith_color.r, zenith_color.g, zenith_color.b))
+	sky_material.set_shader_parameter("lower_horizon_color", Vector3(lower_horizon.r, lower_horizon.g, lower_horizon.b))
+	sky_material.set_shader_parameter("lower_sky_color", Vector3(lower_sky.r, lower_sky.g, lower_sky.b))
+	sky_material.set_shader_parameter("sun_direction", sun_direction)
+	sky_material.set_shader_parameter("sun_color", Vector3(sun_color.r, sun_color.g, sun_color.b))
+	sky_material.set_shader_parameter("sun_visibility", sunlight)
+	sky_material.set_shader_parameter("moon_visibility", star_visibility * 0.82)
+	sky_material.set_shader_parameter("star_visibility", star_visibility)
+
+	scene_environment.ambient_light_color = Color("5d718d").lerp(Color("b9cccf"), daylight)
+	scene_environment.ambient_light_color = scene_environment.ambient_light_color.lerp(
+		Color("b88476"),
+		twilight * 0.30
+	)
+	scene_environment.ambient_light_energy = lerpf(0.37, 0.68, daylight)
+	scene_environment.fog_light_color = Color("354258").lerp(Color("aac2c8"), daylight)
+	scene_environment.fog_light_color = scene_environment.fog_light_color.lerp(
+		Color("a85b4d"),
+		twilight * 0.34
+	)
+	scene_environment.fog_light_energy = lerpf(0.46, 0.68, daylight)
+	scene_environment.fog_density = lerpf(0.0032, 0.0021, daylight)
+
+	sun_light.light_color = sun_color
+	sun_light.light_energy = sunlight * lerpf(0.24, 0.78, smoothstep(0.0, 0.58, sun_height))
+	sun_light.visible = sunlight > 0.01
+	sun_light.basis = Basis.looking_at(-sun_direction, Vector3.UP)
+	moon_light.light_energy = night * star_visibility * 0.36
+	moon_light.basis = Basis.looking_at(sun_direction, Vector3.UP)
+	var should_enable_vehicle_lights := star_visibility > 0.16
+	if should_enable_vehicle_lights != vehicle_lights_enabled:
+		vehicle_lights_enabled = should_enable_vehicle_lights
+		if is_instance_valid(player_car):
+			player_car.set_headlights_enabled(vehicle_lights_enabled)
+		if is_instance_valid(traffic_manager):
+			traffic_manager.set_headlights_enabled(vehicle_lights_enabled)
+
+
+func _format_time_of_day() -> String:
+	var total_minutes := int(floor(time_of_day_hours * 60.0)) % (24 * 60)
+	return "%02d:%02d" % [total_minutes / 60, total_minutes % 60]
+
+
+func _day_phase_name() -> String:
+	if time_of_day_hours >= 5.0 and time_of_day_hours < 8.0:
+		return "DAWN"
+	if time_of_day_hours >= 8.0 and time_of_day_hours < 17.0:
+		return "DAY"
+	if time_of_day_hours >= 17.0 and time_of_day_hours < 20.0:
+		return "DUSK"
+	return "NIGHT"
 
 
 func _sample_catmull_rom_path(

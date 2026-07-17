@@ -64,6 +64,11 @@ func reset_traffic() -> void:
 		_respawn_vehicle(vehicles[index])
 
 
+func set_headlights_enabled(enabled: bool) -> void:
+	for vehicle in vehicles:
+		vehicle.set_headlights_enabled(enabled)
+
+
 func _build_pool() -> void:
 	for index in VEHICLE_COUNT:
 		var vehicle: CozyTrafficVehicle = TrafficVehicleScript.new()

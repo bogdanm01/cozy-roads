@@ -35,6 +35,11 @@ func set_brake_level(level: float) -> void:
 	brake_light_material.albedo_color = Color("d33931").lerp(Color("ff5547"), amount)
 
 
+func set_headlights_enabled(enabled: bool) -> void:
+	if is_instance_valid(headlight):
+		headlight.visible = enabled
+
+
 func _build_collision() -> void:
 	var collision := CollisionShape3D.new()
 	var shape := BoxShape3D.new()

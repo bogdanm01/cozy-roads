@@ -47,6 +47,7 @@ var wheel_suspension_offsets: Array[float] = []
 var wheel_suspension_velocities: Array[float] = []
 var brake_light_material: StandardMaterial3D
 var brake_lights: Array[OmniLight3D] = []
+var headlight_beams: Array[SpotLight3D] = []
 var brake_light_level := 0.0
 var contact_shadow: MeshInstance3D
 var engine_audio: AudioStreamPlayer3D
@@ -329,8 +330,14 @@ func _build_pickup() -> void:
 		headlight_beam.position = Vector3(side * 0.74, 0.98, -2.94)
 		headlight_beam.rotation.x = deg_to_rad(-4.0)
 		body_root.add_child(headlight_beam)
+		headlight_beams.append(headlight_beam)
 
 	_build_wheels(charcoal, chrome)
+
+
+func set_headlights_enabled(enabled: bool) -> void:
+	for light in headlight_beams:
+		light.visible = enabled
 
 
 func _add_box_collider(node_name: String, size: Vector3, local_position: Vector3) -> void:
