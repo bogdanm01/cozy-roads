@@ -12,8 +12,8 @@ The pickup uses custom weighty handling, full-vehicle terrain alignment,
 independent visual suspension, acceleration squat, braking dive, steering roll,
 and direction-aware grade forces that build speed while coasting downhill. It
 also includes headlights, brake lights, and procedural engine audio. An
-eight-minute day/night cycle moves
-from starry nights through warm dawn and dusk into clear daylight, continuously
+eight-minute day/night cycle moves from starry nights through warm dawn and
+dusk into clear daylight, continuously
 blending the sky, sun, moon, fog, ambient light, and vehicle headlights. The
 world includes reflective road studs, forest scenery, guardrails, utility
 lights, and a GPU-batched streaming road that recycles old chunks. The opening
@@ -44,8 +44,14 @@ streamed chunks add deterministic rocks and reflective wayfinding signs.
 - `O`: toggle higher-quality SSAO (more GPU intensive)
 - Controller: left stick plus triggers
 
-The HUD shows the current time and day phase, speed, steering angle, FPS,
-trip/best distance, route progress, and the current objective.
+The chase camera recenters smoothly after orbiting, looks subtly farther down
+the road at speed, widens its field of view by four degrees, and pulls forward
+when terrain or scenery would otherwise block the view.
+
+The compact HUD keeps the current objective and route progress in the upper
+corner, speed and steering in the lower corner, and performance in the opposite
+corner. Contextual toasts confirm stamps, the endless-road gateway, and audio
+changes; the controls reminder fades after the opening seconds.
 
 ## Performance
 
@@ -54,6 +60,8 @@ Pro using the Compatibility renderer, the illuminated scenic route with live
 traffic measured 99.0 FPS average / 97 FPS minimum; the curved endless section
 with traffic measured 96.2 FPS average / 87 FPS minimum. The daylight shadow
 pass with continuous hill geometry measured 95.3 FPS average / 88 FPS minimum.
+The polished night HUD and camera pass measured 98.5 FPS average / 98 FPS
+minimum.
 Road surfaces, hillside ribbons, markings,
 reflectors, trees, rocks, and ambient-occlusion cards are batched; endless chunks
 are capped at 12 active sections and traffic is capped at five pooled vehicles.

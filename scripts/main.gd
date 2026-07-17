@@ -21,7 +21,15 @@ const CABIN_POSITION := Vector3(-14.0, 0.0, -351.0)
 var player_car: CozyCar
 var endless_road: CozyEndlessRoad
 var traffic_manager: Node3D
-var telemetry_label: Label
+var speed_value_label: Label
+var speed_detail_label: Label
+var drive_status_label: Label
+var objective_label: Label
+var performance_label: Label
+var route_progress_bar: ProgressBar
+var controls_panel: PanelContainer
+var toast_panel: PanelContainer
+var toast_label: Label
 var scene_environment: Environment
 var sky_material: ShaderMaterial
 var sun_light: DirectionalLight3D
@@ -59,6 +67,9 @@ var roadside_stamps := 0
 var best_distance := 0.0
 var audio_muted := false
 var reset_was_pressed := false
+var ui_elapsed := 0.0
+var toast_timer := 0.0
+const TOAST_DURATION := 4.0
 
 
 func _ready() -> void:
@@ -117,37 +128,9 @@ func _build_drive_world() -> void:
 
 func _process(delta: float) -> void:
 	_update_day_night_cycle(delta)
-	if is_instance_valid(player_car) and is_instance_valid(telemetry_label):
+	if is_instance_valid(player_car):
 		_update_drive_progress()
-		var speed_kmh := absf(player_car.speed) * 3.6
-		var steering_degrees := rad_to_deg(player_car.steering_angle)
-		var fps := Engine.get_frames_per_second()
-		var ao_mode := "SSAO" if is_instance_valid(scene_environment) and scene_environment.ssao_enabled else "FAST AO"
-		var time_text := _format_time_of_day()
-		var day_phase := _day_phase_name()
-		var route_percent := roundi(_calculate_route_progress(player_car.global_position) * 100.0)
-		var objective_text := "NEXT STOP  •  pull into the roadside diner  •  %d m" % roundi(player_car.global_position.distance_to(DINER_POSITION))
-		if diner_reached:
-			objective_text = "DINER STAMPED  •  continue through the open-road gateway  •  stamps %d" % roadside_stamps
-		if route_finished:
-			var endless_distance := endless_road.distance_from_gateway(player_car.global_position) if is_instance_valid(endless_road) else 0.0
-			objective_text = "OPEN ROAD  •  %.1f km beyond gateway  •  stamps %d" % [endless_distance / 1000.0, roadside_stamps]
-		telemetry_label.text = (
-			"COZY ROADS  •  SCENIC DRIVE  •  %s %s  •  %d FPS  •  %s\n"
-			+ "%3.0f km/h  •  steering %+.0f°  •  trip %.2f km  •  best %.2f km  •  route %d%%\n"
-			+ objective_text + "\n"
-			+ "WASD / arrows drive  •  LMB drag camera  •  R reset  •  T +1 hour  •  O SSAO  •  M audio"
-		) % [
-			time_text,
-			day_phase,
-			fps,
-			ao_mode,
-			speed_kmh,
-			steering_degrees,
-			trip_distance / 1000.0,
-			best_distance / 1000.0,
-			route_percent,
-		]
+		_update_hud(delta)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -158,6 +141,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_M:
 		audio_muted = not audio_muted
 		AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), audio_muted)
+		_show_toast("AUDIO MUTED" if audio_muted else "AUDIO RESTORED")
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_T:
 		set_time_of_day(time_of_day_hours + 1.0)
@@ -184,6 +168,91 @@ func _update_drive_progress() -> void:
 		best_distance = maxf(best_distance, trip_distance)
 	reset_was_pressed = reset_pressed
 	last_car_position = player_car.global_position
+
+
+func _update_hud(delta: float) -> void:
+	if not (
+		is_instance_valid(speed_value_label)
+		and is_instance_valid(objective_label)
+		and is_instance_valid(drive_status_label)
+		and is_instance_valid(performance_label)
+	):
+		return
+	var speed_kmh := absf(player_car.speed) * 3.6
+	var gear := "P"
+	if player_car.speed > 0.20:
+		gear = "D"
+	elif player_car.speed < -0.20:
+		gear = "R"
+	speed_value_label.text = "%s  %02d" % [gear, roundi(speed_kmh)]
+	speed_detail_label.text = "KM/H   •   STEERING %+.0f°" % rad_to_deg(player_car.steering_angle)
+
+	var route_progress := _calculate_route_progress(player_car.global_position)
+	var route_percent := roundi(route_progress * 100.0)
+	route_progress_bar.value = float(route_percent)
+	drive_status_label.text = (
+		"%s  %s   •   TRIP %.2f km   •   STAMPS %d"
+		% [
+			_format_time_of_day(),
+			_day_phase_name(),
+			trip_distance / 1000.0,
+			roadside_stamps,
+		]
+	)
+	if route_finished:
+		var endless_distance := (
+			endless_road.distance_from_gateway(player_car.global_position)
+			if is_instance_valid(endless_road)
+			else 0.0
+		)
+		objective_label.text = "OPEN ROAD   •   %.1f km FROM GATEWAY" % (
+			endless_distance / 1000.0
+		)
+		route_progress_bar.value = 100.0
+	elif diner_reached:
+		var gateway_distance := player_car.global_position.distance_to(scenic_route_points[-1])
+		objective_label.text = "OPEN-ROAD GATEWAY   •   %d m" % roundi(gateway_distance)
+	else:
+		var diner_distance := player_car.global_position.distance_to(DINER_POSITION)
+		objective_label.text = "ROADSIDE DINER   •   %d m" % roundi(diner_distance)
+
+	var ao_mode := (
+		"SSAO"
+		if is_instance_valid(scene_environment) and scene_environment.ssao_enabled
+		else "FAST AO"
+	)
+	performance_label.text = "%d FPS   •   %s%s" % [
+		Engine.get_frames_per_second(),
+		ao_mode,
+		"   •   MUTED" if audio_muted else "",
+	]
+
+	ui_elapsed += delta
+	var controls_alpha_target := 1.0 if ui_elapsed < 12.0 else 0.28
+	controls_panel.modulate.a = lerpf(
+		controls_panel.modulate.a,
+		controls_alpha_target,
+		1.0 - exp(-2.2 * delta)
+	)
+	if toast_timer > 0.0:
+		toast_timer = maxf(0.0, toast_timer - delta)
+		toast_panel.visible = true
+		var elapsed := TOAST_DURATION - toast_timer
+		toast_panel.modulate.a = minf(
+			clampf(elapsed / 0.22, 0.0, 1.0),
+			clampf(toast_timer / 0.55, 0.0, 1.0)
+		)
+	else:
+		toast_panel.visible = false
+
+
+func _show_toast(message: String) -> void:
+	if not is_instance_valid(toast_label):
+		return
+	toast_label.text = message
+	toast_timer = TOAST_DURATION
+	toast_panel.visible = true
+	toast_panel.modulate.a = 0.0
 
 
 func _calculate_route_progress(position_3d: Vector3) -> float:
@@ -1132,11 +1201,14 @@ func _on_diner_entered(body: Node3D) -> void:
 		return
 	diner_reached = true
 	roadside_stamps += 1
+	_show_toast("ROADSIDE STAMP COLLECTED   •   +1")
 	_save_progress()
 
 
 func _on_route_finished(body: Node3D) -> void:
 	if body == player_car:
+		if not route_finished:
+			_show_toast("OPEN ROAD UNLOCKED   •   DRIVE AS FAR AS YOU LIKE")
 		route_finished = true
 		_save_progress()
 
@@ -1303,31 +1375,149 @@ func _add_reflector_multimesh(node_name: String, transforms: Array[Transform3D],
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
-	var panel := PanelContainer.new()
-	panel.position = Vector2(24.0, 24.0)
+	var objective_panel := PanelContainer.new()
+	objective_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	objective_panel.offset_left = 20.0
+	objective_panel.offset_top = 20.0
+	objective_panel.offset_right = 470.0
+	objective_panel.offset_bottom = 112.0
+	objective_panel.add_theme_stylebox_override("panel", _hud_panel_style())
+	layer.add_child(objective_panel)
+	var objective_stack := VBoxContainer.new()
+	objective_stack.add_theme_constant_override("separation", 5)
+	objective_panel.add_child(objective_stack)
+	drive_status_label = Label.new()
+	drive_status_label.text = "20:30  NIGHT   •   TRIP 0.00 km   •   STAMPS 0"
+	drive_status_label.add_theme_font_size_override("font_size", 13)
+	drive_status_label.add_theme_color_override("font_color", Color("aab5b7"))
+	objective_stack.add_child(drive_status_label)
+	objective_label = Label.new()
+	objective_label.text = "ROADSIDE DINER"
+	objective_label.add_theme_font_size_override("font_size", 19)
+	objective_label.add_theme_color_override("font_color", Color("f2d09a"))
+	objective_stack.add_child(objective_label)
+	route_progress_bar = ProgressBar.new()
+	route_progress_bar.custom_minimum_size = Vector2(410.0, 7.0)
+	route_progress_bar.max_value = 100.0
+	route_progress_bar.show_percentage = false
+	var progress_background := StyleBoxFlat.new()
+	progress_background.bg_color = Color("252d31")
+	progress_background.corner_radius_top_left = 3
+	progress_background.corner_radius_top_right = 3
+	progress_background.corner_radius_bottom_left = 3
+	progress_background.corner_radius_bottom_right = 3
+	var progress_fill := StyleBoxFlat.new()
+	progress_fill.bg_color = Color("d7945e")
+	progress_fill.corner_radius_top_left = 3
+	progress_fill.corner_radius_top_right = 3
+	progress_fill.corner_radius_bottom_left = 3
+	progress_fill.corner_radius_bottom_right = 3
+	route_progress_bar.add_theme_stylebox_override("background", progress_background)
+	route_progress_bar.add_theme_stylebox_override("fill", progress_fill)
+	objective_stack.add_child(route_progress_bar)
+
+	var speed_panel := PanelContainer.new()
+	speed_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	speed_panel.offset_left = 20.0
+	speed_panel.offset_top = -105.0
+	speed_panel.offset_right = 190.0
+	speed_panel.offset_bottom = -20.0
+	speed_panel.add_theme_stylebox_override("panel", _hud_panel_style(Color(0.035, 0.04, 0.045, 0.86)))
+	layer.add_child(speed_panel)
+	var speed_stack := VBoxContainer.new()
+	speed_stack.add_theme_constant_override("separation", -2)
+	speed_panel.add_child(speed_stack)
+	speed_value_label = Label.new()
+	speed_value_label.text = "P  00"
+	speed_value_label.add_theme_font_size_override("font_size", 34)
+	speed_value_label.add_theme_color_override("font_color", WHITE)
+	speed_stack.add_child(speed_value_label)
+	speed_detail_label = Label.new()
+	speed_detail_label.text = "KM/H   •   STEERING +0°"
+	speed_detail_label.add_theme_font_size_override("font_size", 11)
+	speed_detail_label.add_theme_color_override("font_color", Color("aab5b7"))
+	speed_stack.add_child(speed_detail_label)
+
+	var performance_panel := PanelContainer.new()
+	performance_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	performance_panel.offset_left = -205.0
+	performance_panel.offset_top = 20.0
+	performance_panel.offset_right = -20.0
+	performance_panel.offset_bottom = 55.0
+	performance_panel.add_theme_stylebox_override(
+		"panel",
+		_hud_panel_style(Color(0.035, 0.04, 0.045, 0.68), 8.0, 10.0, 6.0)
+	)
+	layer.add_child(performance_panel)
+	performance_label = Label.new()
+	performance_label.text = "-- FPS   •   FAST AO"
+	performance_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	performance_label.add_theme_font_size_override("font_size", 12)
+	performance_label.add_theme_color_override("font_color", Color("aab5b7"))
+	performance_panel.add_child(performance_label)
+
+	controls_panel = PanelContainer.new()
+	controls_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	controls_panel.offset_left = -280.0
+	controls_panel.offset_top = -47.0
+	controls_panel.offset_right = 280.0
+	controls_panel.offset_bottom = -16.0
+	controls_panel.add_theme_stylebox_override(
+		"panel",
+		_hud_panel_style(Color(0.035, 0.04, 0.045, 0.62), 8.0, 10.0, 4.0)
+	)
+	layer.add_child(controls_panel)
+	var controls_label := Label.new()
+	controls_label.text = "WASD DRIVE   •   LMB ORBIT   •   R RESET   •   T TIME   •   M AUDIO"
+	controls_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	controls_label.add_theme_font_size_override("font_size", 12)
+	controls_label.add_theme_color_override("font_color", Color("c3cbca"))
+	controls_panel.add_child(controls_label)
+
+	toast_panel = PanelContainer.new()
+	toast_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	toast_panel.offset_left = -275.0
+	toast_panel.offset_top = 116.0
+	toast_panel.offset_right = 275.0
+	toast_panel.offset_bottom = 158.0
+	toast_panel.add_theme_stylebox_override(
+		"panel",
+		_hud_panel_style(Color(0.12, 0.085, 0.055, 0.92), 10.0, 14.0, 8.0)
+	)
+	toast_panel.visible = false
+	layer.add_child(toast_panel)
+	toast_label = Label.new()
+	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast_label.add_theme_font_size_override("font_size", 15)
+	toast_label.add_theme_color_override("font_color", Color("ffe2aa"))
+	toast_panel.add_child(toast_label)
+
+
+func _hud_panel_style(
+	background := Color(0.035, 0.04, 0.045, 0.78),
+	radius := 10.0,
+	horizontal_margin := 14.0,
+	vertical_margin := 10.0
+) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.04, 0.045, 0.05, 0.82)
-	style.corner_radius_top_left = 8
-	style.corner_radius_top_right = 8
-	style.corner_radius_bottom_left = 8
-	style.corner_radius_bottom_right = 8
-	style.content_margin_left = 16.0
-	style.content_margin_right = 16.0
-	style.content_margin_top = 11.0
-	style.content_margin_bottom = 11.0
-	panel.add_theme_stylebox_override("panel", style)
-	layer.add_child(panel)
-	var label := Label.new()
-	telemetry_label = label
-	label.text = (
-		"COZY ROADS  •  SCENIC NIGHT DRIVE  •  -- FPS  •  FAST AO\n"
-		+ "0 km/h  •  steering 0°  •  trip 0.00 km  •  best %.2f km  •  route 0%%\n"
-		+ "NEXT STOP  •  pull into the roadside diner\n"
-		+ "WASD / arrows drive  •  LMB drag camera  •  R reset  •  O SSAO  •  M audio"
-	) % (best_distance / 1000.0)
-	label.add_theme_font_size_override("font_size", 17)
-	label.add_theme_color_override("font_color", WHITE)
-	panel.add_child(label)
+	style.bg_color = background
+	var rounded := roundi(radius)
+	style.corner_radius_top_left = rounded
+	style.corner_radius_top_right = rounded
+	style.corner_radius_bottom_left = rounded
+	style.corner_radius_bottom_right = rounded
+	style.content_margin_left = horizontal_margin
+	style.content_margin_right = horizontal_margin
+	style.content_margin_top = vertical_margin
+	style.content_margin_bottom = vertical_margin
+	style.border_width_left = 1
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.border_color = Color(0.72, 0.78, 0.77, 0.10)
+	style.shadow_color = Color(0.0, 0.0, 0.0, 0.24)
+	style.shadow_size = 5
+	return style
 
 
 func _add_static_box(node_name: String, size: Vector3, position_3d: Vector3, color: Color, collision: bool) -> void:

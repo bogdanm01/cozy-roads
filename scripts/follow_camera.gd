@@ -11,17 +11,19 @@ var orbit_pitch := 0.0
 var target_orbit_yaw := 0.0
 var target_orbit_pitch := 0.0
 var orbiting := false
+var current_look_ahead := 0.0
 
 const MOUSE_SENSITIVITY := 0.0038
 const MIN_ORBIT_PITCH := deg_to_rad(-16.0)
 const MAX_ORBIT_PITCH := deg_to_rad(48.0)
 const RECENTER_SPEED := 2.8
 const ORBIT_SMOOTH_SPEED := 9.0
+const CAMERA_COLLISION_MARGIN := 0.28
 
 
 func _ready() -> void:
 	position = Vector3(0.0, follow_height, follow_distance)
-	fov = 68.0
+	fov = 66.0
 	far = 520.0
 
 
@@ -58,15 +60,53 @@ func _physics_process(delta: float) -> void:
 	var orbit_weight := 1.0 - exp(-ORBIT_SMOOTH_SPEED * delta)
 	orbit_yaw = lerp_angle(orbit_yaw, target_orbit_yaw, orbit_weight)
 	orbit_pitch = lerpf(orbit_pitch, target_orbit_pitch, orbit_weight)
+	var speed_ratio := 0.0
+	if target is CozyCar:
+		speed_ratio = clampf(absf((target as CozyCar).speed) / CozyCar.MAX_FORWARD_SPEED, 0.0, 1.0)
+	var target_fov := lerpf(66.0, 70.0, smoothstep(0.18, 1.0, speed_ratio))
+	fov = lerpf(fov, target_fov, 1.0 - exp(-3.8 * delta))
 	var target_basis := target.global_transform.basis
-	var orbit_center := target.global_position + Vector3.UP * look_height
+	var target_look_ahead := 0.0 if orbiting else lerpf(0.12, 0.72, speed_ratio)
+	current_look_ahead = lerpf(
+		current_look_ahead,
+		target_look_ahead,
+		1.0 - exp(-4.0 * delta)
+	)
+	var orbit_center := (
+		target.global_position
+		+ Vector3.UP * look_height
+		- target_basis.z * current_look_ahead
+	)
 	var relative_height := follow_height - look_height
-	var orbit_radius := sqrt(follow_distance * follow_distance + relative_height * relative_height)
-	var base_pitch := atan2(relative_height, follow_distance)
+	var active_follow_distance := follow_distance + lerpf(0.0, 0.45, speed_ratio)
+	var orbit_radius := sqrt(active_follow_distance * active_follow_distance + relative_height * relative_height)
+	var base_pitch := atan2(relative_height, active_follow_distance)
 	var camera_pitch := base_pitch + orbit_pitch
 	var horizontal_distance := cos(camera_pitch) * orbit_radius
 	var vertical_distance := sin(camera_pitch) * orbit_radius
 	var orbit_direction := target_basis.z.rotated(Vector3.UP, orbit_yaw)
 	var desired_position := orbit_center + orbit_direction * horizontal_distance + Vector3.UP * vertical_distance
-	global_position = global_position.lerp(desired_position, 1.0 - exp(-10.0 * delta))
+	desired_position = _collision_safe_position(orbit_center, desired_position)
+	var smoothed_position := global_position.lerp(
+		desired_position,
+		1.0 - exp(-10.0 * delta)
+	)
+	global_position = _collision_safe_position(orbit_center, smoothed_position)
 	look_at(orbit_center, Vector3.UP)
+
+
+func _collision_safe_position(center: Vector3, candidate: Vector3) -> Vector3:
+	if not target is CollisionObject3D:
+		return candidate
+	var query := PhysicsRayQueryParameters3D.create(
+		center,
+		candidate,
+		1,
+		[(target as CollisionObject3D).get_rid()]
+	)
+	query.collide_with_areas = false
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return candidate
+	var ray_direction := (candidate - center).normalized()
+	return (hit["position"] as Vector3) - ray_direction * CAMERA_COLLISION_MARGIN
