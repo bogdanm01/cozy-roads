@@ -8,10 +8,11 @@ Start directly on the scenic road, pull into the illuminated roadside diner for
 a stamp, and continue through the glowing gateway onto a deterministic endless
 road. Best trip distance and collected stamps persist between launches.
 
-The pickup uses custom weighty handling, terrain-aware body attitude, independent
-visual suspension, acceleration squat, braking dive, steering roll, and
-direction-aware grade forces that build speed while coasting downhill. It also
-includes headlights, brake lights, and procedural engine audio. An eight-minute day/night cycle moves
+The pickup uses custom weighty handling, full-vehicle terrain alignment,
+independent visual suspension, acceleration squat, braking dive, steering roll,
+and direction-aware grade forces that build speed while coasting downhill. It
+also includes headlights, brake lights, and procedural engine audio. An
+eight-minute day/night cycle moves
 from starry nights through warm dawn and dusk into clear daylight, continuously
 blending the sky, sun, moon, fog, ambient light, and vehicle headlights. The
 world includes reflective road studs, forest scenery, guardrails, utility

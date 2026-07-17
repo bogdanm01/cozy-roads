@@ -24,6 +24,7 @@ const LOW_SPEED_STEERING_RATE := 3.65
 const HIGH_SPEED_STEERING_RATE := 2.30
 const STEERING_RETURN_RATE := 4.1
 const MAX_YAW_RATE := 1.0
+const TERRAIN_ALIGNMENT_SPEED := 12.0
 
 var speed := 0.0
 var throttle_input := 0.0
@@ -37,6 +38,8 @@ var wheel_meshes: Array[MeshInstance3D] = []
 
 var previous_speed := 0.0
 var smoothed_acceleration := 0.0
+var terrain_pitch := 0.0
+var terrain_roll := 0.0
 var body_pitch := 0.0
 var body_pitch_velocity := 0.0
 var body_roll := 0.0
@@ -222,6 +225,8 @@ func reset_car() -> void:
 	steering_angle = 0.0
 	previous_speed = 0.0
 	smoothed_acceleration = 0.0
+	terrain_pitch = 0.0
+	terrain_roll = 0.0
 	body_pitch = 0.0
 	body_pitch_velocity = 0.0
 	body_roll = 0.0
@@ -229,6 +234,9 @@ func reset_car() -> void:
 	body_heave = 0.0
 	body_heave_velocity = 0.0
 	brake_light_level = 0.0
+	visual_root.rotation = Vector3.ZERO
+	body_root.rotation = Vector3.ZERO
+	body_root.position.y = 0.0
 	for index in wheel_suspension_offsets.size():
 		wheel_suspension_offsets[index] = 0.0
 		wheel_suspension_velocities[index] = 0.0
@@ -506,17 +514,22 @@ func _animate_pickup(delta: float, speed_ratio: float, yaw_rate: float) -> void:
 	smoothed_acceleration = lerpf(smoothed_acceleration, raw_acceleration, 1.0 - exp(-9.0 * delta))
 	var lateral_acceleration := yaw_rate * speed
 	var terrain_attitude := _sample_wheel_suspension(delta)
-	# Acceleration and cornering movement stays quiet at walking pace. Terrain
-	# alignment is handled separately so a slowly climbing truck still matches
-	# the road angle instead of remaining unnaturally horizontal.
+	var terrain_weight := 1.0 - exp(-TERRAIN_ALIGNMENT_SPEED * delta)
+	terrain_pitch = lerp_angle(terrain_pitch, terrain_attitude.x, terrain_weight)
+	terrain_roll = lerp_angle(terrain_roll, terrain_attitude.z, terrain_weight)
+	# The complete visible truck follows the road surface. The CharacterBody
+	# remains upright, preserving stable yaw steering and collision behavior.
+	visual_root.rotation.x = terrain_pitch
+	visual_root.rotation.z = terrain_roll
+
+	# Acceleration and cornering movement stays quiet at walking pace and is
+	# layered relative to the terrain-aligned visual truck.
 	var motion_scale := lerpf(0.22, 1.0, smoothstep(0.0, 17.0, absf(speed)))
 
 	# Positive pitch raises the nose; negative pitch produces brake dive.
 	var target_pitch := clampf(smoothed_acceleration / 8.0, -1.0, 1.0) * deg_to_rad(4.2) * motion_scale
-	target_pitch += terrain_attitude.x
 	# Roll follows lateral acceleration, leaning away from the inside of a turn.
 	var target_roll := clampf(lateral_acceleration / 10.0, -1.0, 1.0) * deg_to_rad(4.5) * motion_scale
-	target_roll += terrain_attitude.z
 	var target_heave := -clampf(absf(smoothed_acceleration) / 10.0, 0.0, 1.0) * 0.045 * motion_scale
 	target_heave -= clampf(absf(lateral_acceleration) / 14.0, 0.0, 1.0) * 0.025 * motion_scale
 	target_heave += terrain_attitude.y * motion_scale
@@ -552,7 +565,19 @@ func _sample_wheel_suspension(delta: float) -> Vector3:
 		if not hit.is_empty():
 			var ground_height: float = hit.position.y - global_position.y
 			ground_heights[index] = ground_height
-			target_offset = clampf(ground_height, -0.16, 0.24)
+			# Rotating visual_root already raises one axle and lowers the other.
+			# Compensate that transformed rest height before applying independent
+			# suspension travel, otherwise terrain pitch is counted twice.
+			var transformed_rest_height := (
+				visual_root.basis * wheel_rest_positions[index]
+			).y
+			var visual_up_y := maxf(0.20, visual_root.basis.y.y)
+			var compensated_offset := (
+				wheel_rest_positions[index].y
+				+ ground_height
+				- transformed_rest_height
+			) / visual_up_y
+			target_offset = clampf(compensated_offset, -0.16, 0.24)
 		wheel_suspension_velocities[index] += (
 			(target_offset - wheel_suspension_offsets[index]) * 82.0
 			- wheel_suspension_velocities[index] * 13.5
@@ -560,8 +585,8 @@ func _sample_wheel_suspension(delta: float) -> Vector3:
 		wheel_suspension_offsets[index] += wheel_suspension_velocities[index] * delta
 		wheel_pivots[index].position = wheel_rest_positions[index] + Vector3.UP * wheel_suspension_offsets[index]
 
-	# Use unclamped ground samples for body attitude. Suspension travel remains
-	# limited above, but a 10-degree ramp must still produce a 10-degree body tilt.
+	# Use unclamped ground samples for full-vehicle terrain alignment. Suspension
+	# travel remains limited above, but steep roads must still tilt the truck.
 	var front_height := (ground_heights[0] + ground_heights[1]) * 0.5
 	var rear_height := (ground_heights[2] + ground_heights[3]) * 0.5
 	var left_height := (ground_heights[0] + ground_heights[2]) * 0.5
@@ -571,10 +596,18 @@ func _sample_wheel_suspension(delta: float) -> Vector3:
 		+ wheel_suspension_offsets[2] + wheel_suspension_offsets[3]
 	) * 0.25
 	var track_width := absf(wheel_rest_positions[1].x - wheel_rest_positions[0].x) * visual_root.scale.x
-	var terrain_pitch := clampf(atan2(front_height - rear_height, WHEELBASE), deg_to_rad(-14.0), deg_to_rad(14.0))
-	var terrain_roll := clampf(atan2(right_height - left_height, track_width), deg_to_rad(-10.0), deg_to_rad(10.0))
+	var sampled_pitch := clampf(
+		atan2(front_height - rear_height, WHEELBASE),
+		deg_to_rad(-18.0),
+		deg_to_rad(18.0)
+	)
+	var sampled_roll := clampf(
+		atan2(right_height - left_height, track_width),
+		deg_to_rad(-10.0),
+		deg_to_rad(10.0)
+	)
 	# x = pitch, y = heave, z = roll.
-	return Vector3(terrain_pitch, average_height * 0.72, terrain_roll)
+	return Vector3(sampled_pitch, average_height * 0.72, sampled_roll)
 
 
 func _add_box(parent: Node3D, node_name: String, size: Vector3, local_position: Vector3, material: Material, local_rotation := Vector3.ZERO) -> MeshInstance3D:
