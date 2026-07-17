@@ -4,6 +4,7 @@ extends Node3D
 const MeshFactory := preload("res://scripts/low_poly_mesh.gd")
 
 const CHUNK_LENGTH := 48.0
+const CURVE_SUBDIVISIONS := 6
 const ROAD_WIDTH := 10.625
 const SHOULDER_WIDTH := 14.75
 const TERRAIN_WIDTH := 46.0
@@ -39,6 +40,7 @@ var _wayfinding_material: StandardMaterial3D
 
 var _marking_mesh: BoxMesh
 var _reflector_mesh: ArrayMesh
+var _unit_box_mesh: BoxMesh
 var _trunk_mesh: CylinderMesh
 var _lower_foliage_mesh: CylinderMesh
 var _upper_foliage_mesh: CylinderMesh
@@ -57,11 +59,7 @@ func _process(_delta: float) -> void:
 	var nearest_record := _nearest_chunk(target.global_position)
 	if nearest_record.is_empty():
 		return
-	var nearest_distance := _distance_to_segment(
-		target.global_position,
-		nearest_record["from"],
-		nearest_record["to"]
-	)
+	var nearest_distance := _distance_to_record(target.global_position, nearest_record)
 	# Do no streaming work while the player is still exploring the proving ground
 	# and handcrafted route. The initial pool already waits beyond the gateway.
 	if nearest_distance > STREAM_DISTANCE:
@@ -101,10 +99,26 @@ func sample_distance(distance: float) -> Dictionary:
 	for record in _chunks:
 		if int(record["index"]) != logical_index:
 			continue
-		var from: Vector3 = record["from"]
-		var to: Vector3 = record["to"]
+		var points: Array[Vector3] = record["points"]
+		var local_distance := clampf(
+			distance - float(logical_index) * CHUNK_LENGTH,
+			0.0,
+			CHUNK_LENGTH
+		)
+		var subdivision_length := CHUNK_LENGTH / float(CURVE_SUBDIVISIONS)
+		var segment_index := mini(
+			int(floor(local_distance / subdivision_length)),
+			CURVE_SUBDIVISIONS - 1
+		)
+		var segment_start_distance := float(segment_index) * subdivision_length
+		var t := clampf(
+			(local_distance - segment_start_distance) / subdivision_length,
+			0.0,
+			1.0
+		)
+		var from := points[segment_index]
+		var to := points[segment_index + 1]
 		var direction := (to - from).normalized()
-		var t := clampf((distance - float(logical_index) * CHUNK_LENGTH) / CHUNK_LENGTH, 0.0, 1.0)
 		return {
 			"position": from.lerp(to, t),
 			"direction": direction,
@@ -120,18 +134,20 @@ func project_position(position_3d: Vector3) -> Dictionary:
 	var record := _nearest_chunk(position_3d)
 	if record.is_empty():
 		return {}
-	var from: Vector3 = record["from"]
-	var to: Vector3 = record["to"]
-	var segment := to - from
-	var direction := segment.normalized()
-	var flat_position := Vector3(position_3d.x, 0.0, position_3d.z)
-	var t := clampf((flat_position - from).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
-	var closest := from + segment * t
+	var projection := _closest_point_on_record(position_3d, record)
+	var direction: Vector3 = projection["direction"]
+	var closest: Vector3 = projection["position"]
 	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
+	var flat_position := Vector3(position_3d.x, 0.0, position_3d.z)
+	var subdivision_length := CHUNK_LENGTH / float(CURVE_SUBDIVISIONS)
+	var local_distance := (
+		float(projection["segment_index"]) * subdivision_length
+		+ float(projection["t"]) * subdivision_length
+	)
 	return {
 		"position": closest,
 		"direction": direction,
-		"distance": (float(record["index"]) + t) * CHUNK_LENGTH,
+		"distance": float(record["index"]) * CHUNK_LENGTH + local_distance,
 		"lateral_distance": flat_position.distance_to(closest),
 		"signed_lateral": (flat_position - closest).dot(perpendicular),
 		"chunk_index": int(record["index"]),
@@ -153,16 +169,26 @@ func last_chunk_index() -> int:
 func chunk_center(logical_index: int) -> Vector3:
 	for record in _chunks:
 		if int(record["index"]) == logical_index:
-			return (record["from"] + record["to"]) * 0.5
+			var points: Array[Vector3] = record["points"]
+			return points[int(CURVE_SUBDIVISIONS / 2)]
 	return Vector3.ZERO
 
 
 func _append_chunk() -> void:
 	var logical_index := _last_generated_index + 1
-	var heading := _heading_for_index(logical_index)
-	var direction := Vector3(sin(heading), 0.0, cos(heading))
 	var from := _next_start
-	var to := from + direction * CHUNK_LENGTH
+	var points: Array[Vector3] = [from]
+	var subdivision_length := CHUNK_LENGTH / float(CURVE_SUBDIVISIONS)
+	var start_heading := _heading_for_index(logical_index)
+	var end_heading := _heading_for_index(logical_index + 1)
+	for subdivision_index in CURVE_SUBDIVISIONS:
+		var t := (float(subdivision_index) + 0.5) / float(CURVE_SUBDIVISIONS)
+		var heading := lerp_angle(start_heading, end_heading, t)
+		var subdivision_direction := Vector3(sin(heading), 0.0, cos(heading))
+		var previous_point: Vector3 = points[points.size() - 1]
+		points.append(previous_point + subdivision_direction * subdivision_length)
+	var to: Vector3 = points[points.size() - 1]
+	var direction := (to - from).normalized()
 	var center := (from + to) * 0.5
 	var yaw := atan2(direction.x, direction.z)
 
@@ -171,15 +197,17 @@ func _append_chunk() -> void:
 	chunk.set_meta("logical_index", logical_index)
 	add_child(chunk)
 	_build_ground(chunk, center, yaw)
-	_build_markings(chunk, from, to, direction, yaw)
-	_build_trees(chunk, logical_index, from, to, direction)
-	_build_roadside_variation(chunk, logical_index, from, to, direction, yaw)
+	_build_curved_surface(chunk, points)
+	_build_markings(chunk, points)
+	_build_trees(chunk, logical_index, points)
+	_build_roadside_variation(chunk, logical_index, points)
 
 	_chunks.append({
 		"node": chunk,
 		"index": logical_index,
 		"from": from,
 		"to": to,
+		"points": points,
 	})
 	_next_start = to
 	_last_generated_index = logical_index
@@ -221,51 +249,65 @@ func _build_ground(chunk: Node3D, center: Vector3, yaw: float) -> void:
 	collision_shape.shape = ground_shape
 	ground.add_child(collision_shape)
 
-	_add_box_mesh(
-		chunk,
-		"GravelShoulder",
-		Vector3(SHOULDER_WIDTH, 0.055, CHUNK_LENGTH + 1.5),
-		center + Vector3.UP * 0.002,
-		_shoulder_material,
-		yaw
-	)
-	_add_box_mesh(
-		chunk,
-		"RoadSurface",
-		Vector3(ROAD_WIDTH, 0.055, CHUNK_LENGTH + 1.6),
-		center + Vector3.UP * 0.040,
-		_road_material,
-		yaw
-	)
 
 
-func _build_markings(chunk: Node3D, from: Vector3, to: Vector3, direction: Vector3, yaw: float) -> void:
-	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
+func _build_curved_surface(chunk: Node3D, points: Array[Vector3]) -> void:
+	var shoulder_transforms: Array[Transform3D] = []
+	var road_transforms: Array[Transform3D] = []
+	for segment_index in points.size() - 1:
+		var from := points[segment_index]
+		var to := points[segment_index + 1]
+		var direction := to - from
+		var distance := direction.length()
+		var yaw := atan2(direction.x, direction.z)
+		var rotation := Basis.from_euler(Vector3(0.0, yaw, 0.0))
+		var center := (from + to) * 0.5
+		var shoulder_basis := (
+			rotation
+			* Basis.from_scale(Vector3(SHOULDER_WIDTH, 0.055, distance + 0.55))
+		)
+		var road_basis := (
+			rotation
+			* Basis.from_scale(Vector3(ROAD_WIDTH, 0.055, distance + 0.60))
+		)
+		shoulder_transforms.append(Transform3D(shoulder_basis, center + Vector3.UP * 0.002))
+		road_transforms.append(Transform3D(road_basis, center + Vector3.UP * 0.040))
+	_add_multimesh(chunk, "GravelShoulder", _unit_box_mesh, _shoulder_material, shoulder_transforms, false, 260.0)
+	_add_multimesh(chunk, "RoadSurface", _unit_box_mesh, _road_material, road_transforms, false, 260.0)
+
+
+func _build_markings(chunk: Node3D, points: Array[Vector3]) -> void:
 	var marking_transforms: Array[Transform3D] = []
 	var reflector_transforms: Array[Transform3D] = []
-	var basis := Basis.from_euler(Vector3(0.0, yaw, 0.0))
-	var unit_count := int(ceil(CHUNK_LENGTH / 2.35))
-	for unit_index in unit_count:
-		var t := (float(unit_index) + 0.5) / float(unit_count)
-		var centerline: Vector3 = from.lerp(to, t)
-		for side in [-1.0, 1.0]:
-			var edge_position: Vector3 = centerline + perpendicular * ROAD_WIDTH * 0.43 * float(side) + Vector3.UP * 0.084
-			marking_transforms.append(Transform3D(basis, edge_position))
-		if unit_index % 2 == 0:
-			marking_transforms.append(Transform3D(basis, centerline + Vector3.UP * 0.085))
-		if unit_index % 2 == 0:
+	var marking_index := 0
+	for segment_index in points.size() - 1:
+		var from := points[segment_index]
+		var to := points[segment_index + 1]
+		var direction := (to - from).normalized()
+		var perpendicular := Vector3(direction.z, 0.0, -direction.x)
+		var yaw := atan2(direction.x, direction.z)
+		var basis := Basis.from_euler(Vector3(0.0, yaw, 0.0))
+		var unit_count := maxi(1, int(ceil(from.distance_to(to) / 2.35)))
+		for unit_index in unit_count:
+			var t := (float(unit_index) + 0.5) / float(unit_count)
+			var centerline: Vector3 = from.lerp(to, t)
 			for side in [-1.0, 1.0]:
-				var reflector_position: Vector3 = centerline + perpendicular * ROAD_WIDTH * 0.43 * float(side) + Vector3.UP * 0.115
-				reflector_transforms.append(Transform3D(basis, reflector_position))
+				var edge_position: Vector3 = centerline + perpendicular * ROAD_WIDTH * 0.43 * float(side) + Vector3.UP * 0.084
+				marking_transforms.append(Transform3D(basis, edge_position))
+			if marking_index % 2 == 0:
+				marking_transforms.append(Transform3D(basis, centerline + Vector3.UP * 0.085))
+				for side in [-1.0, 1.0]:
+					var reflector_position: Vector3 = centerline + perpendicular * ROAD_WIDTH * 0.43 * float(side) + Vector3.UP * 0.115
+					reflector_transforms.append(Transform3D(basis, reflector_position))
+			marking_index += 1
 
 	_add_multimesh(chunk, "RoadMarkings", _marking_mesh, _line_material, marking_transforms, false, 230.0)
 	_add_multimesh(chunk, "RoadReflectors", _reflector_mesh, _reflector_material, reflector_transforms, false, 210.0)
 
 
-func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3, direction: Vector3) -> void:
+func _build_trees(chunk: Node3D, logical_index: int, points: Array[Vector3]) -> void:
 	var random := RandomNumberGenerator.new()
 	random.seed = STREAM_SEED + logical_index * 7919
-	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
 	var trunk_transforms: Array[Transform3D] = []
 	var light_lower_transforms: Array[Transform3D] = []
 	var light_upper_transforms: Array[Transform3D] = []
@@ -277,9 +319,12 @@ func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3,
 	for tree_index in 18:
 		var side := -1.0 if tree_index % 2 == 0 else 1.0
 		var t := random.randf_range(0.04, 0.96)
+		var road_sample := _sample_polyline(points, t)
+		var direction: Vector3 = road_sample["direction"]
+		var perpendicular := Vector3(direction.z, 0.0, -direction.x)
 		var offset := random.randf_range(8.4, TERRAIN_WIDTH * 0.45)
 		var along_jitter := direction * random.randf_range(-2.1, 2.1)
-		var position_3d := from.lerp(to, t) + perpendicular * offset * side + along_jitter
+		var position_3d: Vector3 = road_sample["position"] + perpendicular * offset * side + along_jitter
 		var scale_value := random.randf_range(0.98, 1.55)
 		var rotation := Basis(Vector3.UP, random.randf_range(0.0, TAU))
 		var scale_basis := rotation.scaled(Vector3.ONE * scale_value)
@@ -298,8 +343,14 @@ func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3,
 	for rock_index in 6:
 		var rock_side := -1.0 if rock_index % 2 == 0 else 1.0
 		var rock_t := random.randf_range(0.06, 0.94)
+		var rock_road_sample := _sample_polyline(points, rock_t)
+		var rock_direction: Vector3 = rock_road_sample["direction"]
+		var rock_perpendicular := Vector3(rock_direction.z, 0.0, -rock_direction.x)
 		var rock_offset := random.randf_range(6.6, TERRAIN_WIDTH * 0.43)
-		var rock_position := from.lerp(to, rock_t) + perpendicular * rock_offset * rock_side
+		var rock_position: Vector3 = (
+			rock_road_sample["position"]
+			+ rock_perpendicular * rock_offset * rock_side
+		)
 		var rock_scale := Vector3(
 			random.randf_range(0.55, 1.35),
 			random.randf_range(0.45, 1.05),
@@ -320,18 +371,30 @@ func _build_trees(chunk: Node3D, logical_index: int, from: Vector3, to: Vector3,
 func _build_roadside_variation(
 	chunk: Node3D,
 	logical_index: int,
-	from: Vector3,
-	to: Vector3,
-	direction: Vector3,
-	yaw: float
+	points: Array[Vector3]
 ) -> void:
 	if logical_index % 5 != 2:
 		return
+	var road_sample := _sample_polyline(points, 0.66)
+	var direction: Vector3 = road_sample["direction"]
 	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
 	var side := -1.0 if logical_index % 10 == 2 else 1.0
-	var sign_position := from.lerp(to, 0.66) + perpendicular * 7.125 * side
+	var sign_position: Vector3 = road_sample["position"] + perpendicular * 7.125 * side
+	var yaw := atan2(direction.x, direction.z)
 	_add_box_mesh(chunk, "WayfindingPost", Vector3(0.14, 1.75, 0.14), sign_position + Vector3.UP * 0.88, _sign_post_material, yaw)
 	_add_box_mesh(chunk, "ReflectiveWayfindingSign", Vector3(1.28, 0.62, 0.10), sign_position + Vector3.UP * 1.72, _wayfinding_material, yaw)
+
+
+func _sample_polyline(points: Array[Vector3], normalized_distance: float) -> Dictionary:
+	var scaled_distance := clampf(normalized_distance, 0.0, 1.0) * float(CURVE_SUBDIVISIONS)
+	var segment_index := mini(int(floor(scaled_distance)), CURVE_SUBDIVISIONS - 1)
+	var t := clampf(scaled_distance - float(segment_index), 0.0, 1.0)
+	var from := points[segment_index]
+	var to := points[segment_index + 1]
+	return {
+		"position": from.lerp(to, t),
+		"direction": (to - from).normalized(),
+	}
 
 
 func _add_tree_collider(chunk: Node3D, position_3d: Vector3, scale_value: float) -> void:
@@ -403,18 +466,50 @@ func _nearest_chunk(position_3d: Vector3) -> Dictionary:
 	var nearest: Dictionary = {}
 	var nearest_distance := INF
 	for record in _chunks:
-		var distance := _distance_to_segment(position_3d, record["from"], record["to"])
+		var distance := _distance_to_record(position_3d, record)
 		if distance < nearest_distance:
 			nearest_distance = distance
 			nearest = record
 	return nearest
 
 
-func _distance_to_segment(position_3d: Vector3, from: Vector3, to: Vector3) -> float:
+func _closest_point_on_record(position_3d: Vector3, record: Dictionary) -> Dictionary:
+	var points: Array[Vector3] = record["points"]
 	var flat_position := Vector3(position_3d.x, 0.0, position_3d.z)
-	var segment := to - from
-	var t := clampf((flat_position - from).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
-	return flat_position.distance_to(from + segment * t)
+	var closest_position := points[0]
+	var closest_direction := Vector3.FORWARD
+	var closest_distance_squared := INF
+	var closest_segment_index := 0
+	var closest_t := 0.0
+	for segment_index in points.size() - 1:
+		var from := points[segment_index]
+		var to := points[segment_index + 1]
+		var segment := to - from
+		var t := clampf(
+			(flat_position - from).dot(segment) / maxf(segment.length_squared(), 0.001),
+			0.0,
+			1.0
+		)
+		var candidate := from + segment * t
+		var distance_squared := flat_position.distance_squared_to(candidate)
+		if distance_squared < closest_distance_squared:
+			closest_distance_squared = distance_squared
+			closest_position = candidate
+			closest_direction = segment.normalized()
+			closest_segment_index = segment_index
+			closest_t = t
+	return {
+		"position": closest_position,
+		"direction": closest_direction,
+		"distance_squared": closest_distance_squared,
+		"segment_index": closest_segment_index,
+		"t": closest_t,
+	}
+
+
+func _distance_to_record(position_3d: Vector3, record: Dictionary) -> float:
+	var projection := _closest_point_on_record(position_3d, record)
+	return sqrt(float(projection["distance_squared"]))
 
 
 func _recycle_chunks(nearest_index: int) -> void:
@@ -450,6 +545,8 @@ func _build_shared_resources() -> void:
 	_marking_mesh = BoxMesh.new()
 	_marking_mesh.size = Vector3(0.115, 0.018, 2.35)
 	_reflector_mesh = MeshFactory.beveled_box(Vector3(0.15, 0.055, 0.24), 0.016)
+	_unit_box_mesh = BoxMesh.new()
+	_unit_box_mesh.size = Vector3.ONE
 	_trunk_mesh = CylinderMesh.new()
 	_trunk_mesh.top_radius = 0.21
 	_trunk_mesh.bottom_radius = 0.33

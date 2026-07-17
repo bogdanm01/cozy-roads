@@ -13,6 +13,7 @@ const MID_GRAY := Color("777b7d")
 const DARK_GRAY := Color("45494b")
 const BLACK := Color("292c2e")
 const ROAD_WIDTH := 10.625
+const ROAD_CURVE_SUBDIVISIONS := 10
 const DINER_POSITION := Vector3(43.0, 0.0, -281.0)
 const OVERLOOK_POSITION := Vector3(-26.0, 0.0, -204.0)
 const COVERED_BRIDGE_POSITION := Vector3(5.0, 0.0, -254.5)
@@ -28,7 +29,14 @@ var amber_reflector_material: StandardMaterial3D
 var road_reflector_mesh: ArrayMesh
 var white_reflector_transforms: Array[Transform3D] = []
 var amber_reflector_transforms: Array[Transform3D] = []
+var curved_road_surface_transforms: Array[Transform3D] = []
+var curved_road_shoulder_transforms: Array[Transform3D] = []
+var curved_road_edge_transforms: Array[Transform3D] = []
+var curved_road_dash_transforms: Array[Transform3D] = []
+var curved_road_dash_index := 0
+var scenic_route_controls: Array[Vector3] = []
 var scenic_route_points: Array[Vector3] = []
+var scenic_route_segment_sources: Array[int] = []
 var tree_trunk_material: StandardMaterial3D
 var tree_foliage_material: StandardMaterial3D
 var tree_foliage_dark_material: StandardMaterial3D
@@ -314,6 +322,7 @@ func _build_test_field() -> void:
 		var color := WHITE if index % 2 == 0 else BLACK
 		_add_static_box("Boundary", Vector3(2.0, 0.8, 9.5), Vector3(-53.0, 0.2, z_position), color, true)
 		_add_static_box("Boundary", Vector3(2.0, 0.8, 9.5), Vector3(53.0, 0.2, z_position), color, true)
+	_finish_curved_road_batches()
 	_finish_road_reflectors()
 
 
@@ -402,7 +411,7 @@ func _build_side_slope() -> void:
 
 
 func _build_road_section() -> void:
-	var points: Array[Vector3] = [
+	var control_points: Array[Vector3] = [
 		Vector3(18.0, 0.0, 35.0),
 		Vector3(18.0, 0.0, 12.0),
 		Vector3(27.0, 0.0, -10.0),
@@ -411,8 +420,44 @@ func _build_road_section() -> void:
 		Vector3(19.0, 0.0, -84.0),
 		Vector3(19.0, 0.0, -122.0),
 	]
-	for index in points.size() - 1:
-		_add_road_test_segment(points[index], points[index + 1], ROAD_WIDTH)
+	var curve_points := _sample_catmull_rom_path(control_points, ROAD_CURVE_SUBDIVISIONS)
+	for index in curve_points.size() - 1:
+		_add_road_test_segment(curve_points[index], curve_points[index + 1], ROAD_WIDTH)
+
+
+func _sample_catmull_rom_path(
+	control_points: Array[Vector3],
+	subdivisions: int,
+	source_segments: Array[int] = []
+) -> Array[Vector3]:
+	source_segments.clear()
+	var samples: Array[Vector3] = []
+	if control_points.size() < 2:
+		samples.assign(control_points)
+		return samples
+	var safe_subdivisions := maxi(1, subdivisions)
+	samples.append(control_points[0])
+	for segment_index in control_points.size() - 1:
+		var p0 := control_points[maxi(segment_index - 1, 0)]
+		var p1 := control_points[segment_index]
+		var p2 := control_points[segment_index + 1]
+		var p3 := control_points[mini(segment_index + 2, control_points.size() - 1)]
+		for step in range(1, safe_subdivisions + 1):
+			var t := float(step) / float(safe_subdivisions)
+			samples.append(_catmull_rom(p0, p1, p2, p3, t))
+			source_segments.append(segment_index)
+	return samples
+
+
+func _catmull_rom(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, t: float) -> Vector3:
+	var t_squared := t * t
+	var t_cubed := t_squared * t
+	return 0.5 * (
+		2.0 * p1
+		+ (p2 - p0) * t
+		+ (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t_squared
+		+ (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t_cubed
+	)
 
 
 func _build_scenic_route() -> void:
@@ -427,7 +472,7 @@ func _build_scenic_route() -> void:
 		Color("18241f"),
 		true
 	)
-	scenic_route_points = [
+	scenic_route_controls = [
 		Vector3(19.0, 0.0, -122.0),
 		Vector3(18.0, 0.0, -151.0),
 		Vector3(8.0, 0.0, -181.0),
@@ -439,6 +484,11 @@ func _build_scenic_route() -> void:
 		Vector3(-4.0, 0.0, -372.0),
 		Vector3(-3.0, 0.0, -408.0),
 	]
+	scenic_route_points = _sample_catmull_rom_path(
+		scenic_route_controls,
+		ROAD_CURVE_SUBDIVISIONS,
+		scenic_route_segment_sources
+	)
 	route_total_length = 0.0
 	for index in scenic_route_points.size() - 1:
 		route_total_length += scenic_route_points[index].distance_to(scenic_route_points[index + 1])
@@ -459,13 +509,11 @@ func _add_scenic_road_segment(from: Vector3, to: Vector3, width: float) -> void:
 	var distance := direction.length()
 	var midpoint := (from + to) * 0.5 + Vector3.UP * 0.065
 	var yaw := atan2(direction.x, direction.z)
-	_add_visual_box(
-		"GravelShoulder",
-		Vector3(width + 2.4, 0.07, distance + 0.65),
-		midpoint,
-		Color("493f37"),
-		Vector3(0.0, yaw, 0.0)
+	var shoulder_basis := (
+		Basis.from_euler(Vector3(0.0, yaw, 0.0))
+		* Basis.from_scale(Vector3(width + 2.4, 0.07, distance + 0.65))
 	)
+	curved_road_shoulder_transforms.append(Transform3D(shoulder_basis, midpoint))
 	_add_road_test_segment(from, to, width)
 
 
@@ -478,7 +526,7 @@ func _build_scenic_forest() -> void:
 		var direction := to - from
 		var distance := direction.length()
 		var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
-		var tree_count := maxi(3, int(distance / 7.0))
+		var tree_count := maxi(1, roundi(distance / 7.0))
 		for tree_index in tree_count:
 			var t := (float(tree_index) + 0.45 + random.randf_range(-0.16, 0.16)) / float(tree_count)
 			for side in [-1.0, 1.0]:
@@ -635,35 +683,58 @@ func _build_scenic_guardrails() -> void:
 func _add_guardrail_segment(segment_index: int, side: float) -> void:
 	if not is_instance_valid(guardrail_material):
 		guardrail_material = _material(Color("737b81"))
-	var from := scenic_route_points[segment_index]
-	var to := scenic_route_points[segment_index + 1]
-	var direction := to - from
-	var distance := direction.length()
-	var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
-	var yaw := atan2(direction.x, direction.z)
-	var rail_center := (from + to) * 0.5 + perpendicular * 6.5 * side + Vector3.UP * 0.76
-	_add_static_box_rotated(
-		"Guardrail",
-		Vector3(0.18, 0.28, distance - 1.2),
-		rail_center,
-		Vector3(0.0, yaw, 0.0),
-		Color("737b81"),
-		true,
-		0.045
-	)
-	var post_count := maxi(2, int(distance / 3.5))
-	for post_index in post_count + 1:
-		var t := float(post_index) / float(post_count)
-		var post_position := from.lerp(to, t) + perpendicular * 6.5 * side + Vector3.UP * 0.45
-		_add_visual_box("GuardrailPost", Vector3(0.18, 0.90, 0.18), post_position, Color("5f676c"), Vector3(0.0, yaw, 0.0))
-		if post_index % 2 == 0:
+	var piece_index := 0
+	var last_to := Vector3.ZERO
+	var last_perpendicular := Vector3.ZERO
+	var last_yaw := 0.0
+	for sample_index in scenic_route_segment_sources.size():
+		if scenic_route_segment_sources[sample_index] != segment_index:
+			continue
+		var from := scenic_route_points[sample_index]
+		var to := scenic_route_points[sample_index + 1]
+		var direction := to - from
+		var distance := direction.length()
+		var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
+		var yaw := atan2(direction.x, direction.z)
+		var rail_center := (from + to) * 0.5 + perpendicular * 6.5 * side + Vector3.UP * 0.76
+		_add_static_box_rotated(
+			"Guardrail",
+			Vector3(0.18, 0.28, distance + 0.18),
+			rail_center,
+			Vector3(0.0, yaw, 0.0),
+			Color("737b81"),
+			true,
+			0.045
+		)
+		var post_position := from + perpendicular * 6.5 * side + Vector3.UP * 0.45
+		_add_visual_box(
+			"GuardrailPost",
+			Vector3(0.18, 0.90, 0.18),
+			post_position,
+			Color("5f676c"),
+			Vector3(0.0, yaw, 0.0)
+		)
+		if piece_index % 2 == 0:
 			_add_road_reflector(post_position + Vector3.UP * 0.44, Vector3(0.0, yaw, 0.0), true)
+		piece_index += 1
+		last_to = to
+		last_perpendicular = perpendicular
+		last_yaw = yaw
+	if piece_index > 0:
+		var final_post := last_to + last_perpendicular * 6.5 * side + Vector3.UP * 0.45
+		_add_visual_box(
+			"GuardrailPost",
+			Vector3(0.18, 0.90, 0.18),
+			final_post,
+			Color("5f676c"),
+			Vector3(0.0, last_yaw, 0.0)
+		)
 
 
 func _add_chevron_marker(point_index: int) -> void:
-	var previous := scenic_route_points[point_index - 1]
-	var point := scenic_route_points[point_index]
-	var following := scenic_route_points[point_index + 1]
+	var previous := scenic_route_controls[point_index - 1]
+	var point := scenic_route_controls[point_index]
+	var following := scenic_route_controls[point_index + 1]
 	var incoming := (point - previous).normalized()
 	var outgoing := (following - point).normalized()
 	var tangent := (incoming + outgoing).normalized()
@@ -686,11 +757,11 @@ func _add_chevron_marker(point_index: int) -> void:
 
 func _build_utility_line() -> void:
 	var pole_positions: Array[Vector3] = []
-	for index in scenic_route_points.size() - 1:
+	for index in scenic_route_controls.size() - 1:
 		if index % 2 != 0:
 			continue
-		var point := scenic_route_points[index]
-		var direction := scenic_route_points[index + 1] - point
+		var point := scenic_route_controls[index]
+		var direction := scenic_route_controls[index + 1] - point
 		var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
 		var pole_position := point - perpendicular * 11.0
 		pole_positions.append(pole_position)
@@ -903,7 +974,7 @@ func _build_scenic_overlook() -> void:
 
 
 func _build_covered_bridge() -> void:
-	var direction := (scenic_route_points[5] - scenic_route_points[4]).normalized()
+	var direction := _nearest_scenic_route_direction(COVERED_BRIDGE_POSITION)
 	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
 	var yaw := atan2(direction.x, direction.z)
 	var rotation_3d := Vector3(0.0, yaw, 0.0)
@@ -946,6 +1017,24 @@ func _build_covered_bridge() -> void:
 		lantern.shadow_enabled = false
 		lantern.position = lantern_position
 		add_child(lantern)
+
+
+func _nearest_scenic_route_direction(position_3d: Vector3) -> Vector3:
+	var nearest_direction := Vector3.FORWARD
+	var nearest_distance := INF
+	for index in scenic_route_points.size() - 1:
+		var from := scenic_route_points[index]
+		var to := scenic_route_points[index + 1]
+		var segment := to - from
+		var segment_length_squared := segment.length_squared()
+		if segment_length_squared < 0.001:
+			continue
+		var t := clampf((position_3d - from).dot(segment) / segment_length_squared, 0.0, 1.0)
+		var distance := position_3d.distance_squared_to(from + segment * t)
+		if distance < nearest_distance:
+			nearest_distance = distance
+			nearest_direction = segment.normalized()
+	return nearest_direction
 
 
 func _build_forest_cabin() -> void:
@@ -1063,18 +1152,23 @@ func _add_road_test_segment(from: Vector3, to: Vector3, width: float) -> void:
 	var midpoint := (from + to) * 0.5 + Vector3.UP * 0.09
 	var yaw := atan2(direction.x, direction.z)
 	var rotation_3d := Vector3(0.0, yaw, 0.0)
-	_add_visual_box("RoadSection", Vector3(width, 0.05, distance + 0.35), midpoint, Color("363a3c"), rotation_3d)
+	var rotation := Basis.from_euler(rotation_3d)
+	var road_basis := rotation * Basis.from_scale(Vector3(width, 0.05, distance + 0.35))
+	curved_road_surface_transforms.append(Transform3D(road_basis, midpoint))
 
 	var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
 	for side in [-1.0, 1.0]:
 		var edge_position: Vector3 = midpoint + perpendicular * width * 0.43 * side + Vector3.UP * 0.035
-		_add_visual_box("RoadEdge", Vector3(0.12, 0.025, distance), edge_position, WHITE, rotation_3d)
-	var dash_count := maxi(1, int(distance / 5.0))
-	for dash_index in dash_count:
-		if dash_index % 2 == 0:
-			var t := (float(dash_index) + 0.5) / float(dash_count)
-			var dash_position := from.lerp(to, t) + Vector3.UP * 0.135
-			_add_visual_box("RoadDash", Vector3(0.10, 0.026, minf(2.5, distance / dash_count * 0.58)), dash_position, WHITE, rotation_3d)
+		var edge_basis := rotation * Basis.from_scale(Vector3(0.12, 0.025, distance + 0.08))
+		curved_road_edge_transforms.append(Transform3D(edge_basis, edge_position))
+	if curved_road_dash_index % 2 == 0:
+		var dash_position := midpoint + Vector3.UP * 0.045
+		var dash_basis := (
+			rotation
+			* Basis.from_scale(Vector3(0.10, 0.026, minf(2.5, distance * 0.72)))
+		)
+		curved_road_dash_transforms.append(Transform3D(dash_basis, dash_position))
+	curved_road_dash_index += 1
 
 	# Small emissive studs suggest retroreflectors catching the headlights.
 	var stud_count := maxi(2, int(distance / 3.2))
@@ -1083,6 +1177,48 @@ func _add_road_test_segment(from: Vector3, to: Vector3, width: float) -> void:
 		for side in [-1.0, 1.0]:
 			var stud_position: Vector3 = from.lerp(to, t) + perpendicular * width * 0.43 * side + Vector3.UP * 0.15
 			_add_road_reflector(stud_position, rotation_3d, false)
+
+
+func _finish_curved_road_batches() -> void:
+	var unit_box := BoxMesh.new()
+	unit_box.size = Vector3.ONE
+	_add_road_multimesh(
+		"CurvedRoadShoulders",
+		unit_box,
+		curved_road_shoulder_transforms,
+		_material(Color("493f37"))
+	)
+	_add_road_multimesh(
+		"CurvedRoadSurface",
+		unit_box,
+		curved_road_surface_transforms,
+		_material(Color("363a3c"))
+	)
+	_add_road_multimesh("CurvedRoadEdges", unit_box, curved_road_edge_transforms, _material(WHITE))
+	_add_road_multimesh("CurvedRoadDashes", unit_box, curved_road_dash_transforms, _material(WHITE))
+
+
+func _add_road_multimesh(
+	node_name: String,
+	mesh: Mesh,
+	transforms: Array[Transform3D],
+	material: Material
+) -> void:
+	if transforms.is_empty():
+		return
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.mesh = mesh
+	multimesh.instance_count = transforms.size()
+	for index in transforms.size():
+		multimesh.set_instance_transform(index, transforms[index])
+	multimesh.custom_aabb = AABB(Vector3(-75.0, -1.0, -430.0), Vector3(150.0, 4.0, 475.0))
+	var instance := MultiMeshInstance3D.new()
+	instance.name = node_name
+	instance.multimesh = multimesh
+	instance.material_override = material
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(instance)
 
 
 func _build_main_lane_reflectors() -> void:
