@@ -18,6 +18,21 @@ const DINER_POSITION := Vector3(43.0, 0.0, -281.0)
 const OVERLOOK_POSITION := Vector3(-26.0, 0.0, -204.0)
 const COVERED_BRIDGE_POSITION := Vector3(5.0, 0.0, -254.5)
 const CABIN_POSITION := Vector3(-14.0, 0.0, -351.0)
+const LANDMARK_IDS := [&"overlook", &"bridge", &"diner", &"cabin"]
+const LANDMARK_NAMES := [
+	"MOONLIT OVERLOOK",
+	"LANTERN BRIDGE",
+	"ROADSIDE DINER",
+	"FOREST CABIN",
+]
+const LANDMARK_POSITIONS := [
+	OVERLOOK_POSITION,
+	COVERED_BRIDGE_POSITION,
+	DINER_POSITION,
+	CABIN_POSITION,
+]
+const PAINT_SCHEME_NAMES := ["AUTUMN RUST", "PINE GREEN", "MIDNIGHT BLUE"]
+const PAINT_UNLOCK_STAMPS := [0, 2, 4]
 
 var player_car: CozyCar
 var endless_road: CozyEndlessRoad
@@ -67,6 +82,10 @@ var diner_reached := false
 var route_finished := false
 var roadside_stamps := 0
 var best_distance := 0.0
+var discovered_landmarks: Dictionary = {}
+var trip_landmarks: Dictionary = {}
+var selected_paint_scheme := 0
+var progress_persistence_enabled := true
 var audio_muted := false
 var reset_was_pressed := false
 var ui_elapsed := 0.0
@@ -92,6 +111,7 @@ func _ready() -> void:
 		spawn_position
 	)
 	add_child(player_car)
+	player_car.set_paint_scheme(selected_paint_scheme)
 	last_car_position = player_car.global_position
 
 	endless_road = EndlessRoadScript.new()
@@ -156,6 +176,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_T:
 		set_time_of_day(time_of_day_hours + 1.0)
 		get_viewport().set_input_as_handled()
+	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_C:
+		_cycle_paint_scheme()
+		get_viewport().set_input_as_handled()
 
 
 func _update_drive_progress() -> void:
@@ -168,6 +191,7 @@ func _update_drive_progress() -> void:
 		trip_distance = 0.0
 		diner_reached = false
 		route_finished = false
+		trip_landmarks.clear()
 		if is_instance_valid(endless_road):
 			endless_road.reset_stream()
 		if is_instance_valid(traffic_manager):
@@ -201,12 +225,13 @@ func _update_hud(delta: float) -> void:
 	var route_percent := roundi(route_progress * 100.0)
 	route_progress_bar.value = float(route_percent)
 	drive_status_label.text = (
-		"%s  %s   •   TRIP %.2f km   •   STAMPS %d"
+		"%s  %s   •   TRIP %.2f km   •   STAMPS %d   •   %s"
 		% [
 			_format_time_of_day(),
 			_day_phase_name(),
 			trip_distance / 1000.0,
 			roadside_stamps,
+			PAINT_SCHEME_NAMES[selected_paint_scheme],
 		]
 	)
 	if route_finished:
@@ -219,12 +244,21 @@ func _update_hud(delta: float) -> void:
 			endless_distance / 1000.0
 		)
 		route_progress_bar.value = 100.0
-	elif diner_reached:
-		var gateway_distance := player_car.global_position.distance_to(scenic_route_points[-1])
-		objective_label.text = "OPEN-ROAD GATEWAY   •   %d m" % roundi(gateway_distance)
 	else:
-		var diner_distance := player_car.global_position.distance_to(DINER_POSITION)
-		objective_label.text = "ROADSIDE DINER   •   %d m" % roundi(diner_distance)
+		var landmark_index := _next_trip_landmark_index()
+		if landmark_index >= 0:
+			var landmark_distance := player_car.global_position.distance_to(
+				LANDMARK_POSITIONS[landmark_index]
+			)
+			objective_label.text = "%s   •   %d m   •   %d/%d STOPS" % [
+				LANDMARK_NAMES[landmark_index],
+				roundi(landmark_distance),
+				trip_landmarks.size(),
+				LANDMARK_IDS.size(),
+			]
+		else:
+			var gateway_distance := player_car.global_position.distance_to(scenic_route_points[-1])
+			objective_label.text = "OPEN-ROAD GATEWAY   •   %d m" % roundi(gateway_distance)
 
 	var ao_mode := (
 		"SSAO"
@@ -263,6 +297,34 @@ func _show_toast(message: String) -> void:
 	toast_timer = TOAST_DURATION
 	toast_panel.visible = true
 	toast_panel.modulate.a = 0.0
+
+
+func _next_trip_landmark_index() -> int:
+	for index in LANDMARK_IDS.size():
+		if not trip_landmarks.has(LANDMARK_IDS[index]):
+			return index
+	return -1
+
+
+func _maximum_unlocked_paint_scheme() -> int:
+	var maximum := 0
+	for index in PAINT_UNLOCK_STAMPS.size():
+		if roadside_stamps >= PAINT_UNLOCK_STAMPS[index]:
+			maximum = index
+	return maximum
+
+
+func _cycle_paint_scheme(persist := true) -> void:
+	if not is_instance_valid(player_car):
+		return
+	var maximum := _maximum_unlocked_paint_scheme()
+	selected_paint_scheme = (selected_paint_scheme + 1) % (maximum + 1)
+	player_car.set_paint_scheme(selected_paint_scheme)
+	_show_toast("%s PAINT SELECTED" % PAINT_SCHEME_NAMES[selected_paint_scheme])
+	if is_instance_valid(soundscape):
+		soundscape.play_progress_chime(470.0 + float(selected_paint_scheme) * 55.0)
+	if persist and progress_persistence_enabled:
+		_save_progress()
 
 
 func _calculate_route_progress(position_3d: Vector3) -> float:
@@ -1026,7 +1088,13 @@ func _build_roadside_diner() -> void:
 		Color("f28a55"),
 		1.05
 	)
-	_add_drive_trigger("DinerArrival", DINER_POSITION + Vector3.UP * 1.5, Vector3(22.0, 3.0, 18.0), &"_on_diner_entered")
+	_add_landmark_trigger(
+		"DinerArrival",
+		&"diner",
+		"ROADSIDE DINER",
+		DINER_POSITION,
+		Vector3(22.0, 3.0, 18.0)
+	)
 
 
 func _build_scenic_overlook() -> void:
@@ -1068,6 +1136,13 @@ func _build_scenic_overlook() -> void:
 	lamp.shadow_enabled = false
 	lamp.position = OVERLOOK_POSITION + Vector3(-1.4, 2.88, -3.8)
 	add_child(lamp)
+	_add_landmark_trigger(
+		"OverlookArrival",
+		&"overlook",
+		"MOONLIT OVERLOOK",
+		OVERLOOK_POSITION,
+		Vector3(18.0, 3.0, 13.0)
+	)
 
 
 func _build_covered_bridge() -> void:
@@ -1114,6 +1189,13 @@ func _build_covered_bridge() -> void:
 		lantern.shadow_enabled = false
 		lantern.position = lantern_position
 		add_child(lantern)
+	_add_landmark_trigger(
+		"BridgeArrival",
+		&"bridge",
+		"LANTERN BRIDGE",
+		COVERED_BRIDGE_POSITION,
+		Vector3(14.0, 4.0, 18.0)
+	)
 
 
 func _nearest_scenic_route_direction(position_3d: Vector3) -> Vector3:
@@ -1172,6 +1254,13 @@ func _build_forest_cabin() -> void:
 	var mailbox_position := CABIN_POSITION + Vector3(15.5, 0.0, 1.5)
 	_add_static_box_rotated("CabinMailboxPost", Vector3(0.16, 1.25, 0.16), mailbox_position + Vector3.UP * 0.63, Vector3.ZERO, Color("4b4038"), true, 0.035)
 	_add_mesh_box_world("CabinMailbox", Vector3(0.56, 0.48, 1.05), mailbox_position + Vector3.UP * 1.34, Vector3.ZERO, _material(Color("7b5143")), 0.08)
+	_add_landmark_trigger(
+		"CabinArrival",
+		&"cabin",
+		"FOREST CABIN",
+		CABIN_POSITION + Vector3(12.0, 0.0, 1.5),
+		Vector3(16.0, 3.0, 16.0)
+	)
 
 
 func _build_route_finish() -> void:
@@ -1208,15 +1297,63 @@ func _add_drive_trigger(node_name: String, position_3d: Vector3, size: Vector3, 
 	add_child(area)
 
 
-func _on_diner_entered(body: Node3D) -> void:
-	if body != player_car or diner_reached:
+func _add_landmark_trigger(
+	node_name: String,
+	landmark_id: StringName,
+	display_name: String,
+	position_3d: Vector3,
+	size: Vector3
+) -> void:
+	var area := Area3D.new()
+	area.name = node_name
+	area.position = position_3d + Vector3.UP * 1.5
+	area.collision_layer = 0
+	area.collision_mask = 1
+	area.monitoring = true
+	var collision_shape := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	collision_shape.shape = shape
+	area.add_child(collision_shape)
+	area.body_entered.connect(_on_landmark_entered.bind(landmark_id, display_name))
+	add_child(area)
+
+
+func _on_landmark_entered(
+	body: Node3D,
+	landmark_id: StringName,
+	display_name: String,
+	persist := true
+) -> void:
+	if body != player_car or trip_landmarks.has(landmark_id):
 		return
-	diner_reached = true
-	roadside_stamps += 1
-	_show_toast("ROADSIDE STAMP COLLECTED   •   +1")
+	trip_landmarks[landmark_id] = true
+	if landmark_id == &"diner":
+		diner_reached = true
+	var was_new := not discovered_landmarks.has(landmark_id)
+	var previous_unlock := _maximum_unlocked_paint_scheme()
+	if was_new:
+		discovered_landmarks[landmark_id] = true
+		roadside_stamps += 1
+	var new_unlock := _maximum_unlocked_paint_scheme()
+	if new_unlock > previous_unlock:
+		_show_toast(
+			"%s STAMPED   •   %s PAINT UNLOCKED   •   PRESS C"
+			% [display_name, PAINT_SCHEME_NAMES[new_unlock]]
+		)
+	elif was_new:
+		_show_toast("%s DISCOVERED   •   STAMP +1" % display_name)
+	else:
+		_show_toast("%s REVISITED   •   %d/%d SCENIC STOPS" % [
+			display_name,
+			trip_landmarks.size(),
+			LANDMARK_IDS.size(),
+		])
 	if is_instance_valid(soundscape):
-		soundscape.play_progress_chime(660.0)
-	_save_progress()
+		var landmark_index := LANDMARK_IDS.find(landmark_id)
+		soundscape.play_progress_chime(560.0 + float(maxi(landmark_index, 0)) * 45.0)
+	if persist:
+		_save_progress()
 
 
 func _on_route_finished(body: Node3D) -> void:
@@ -1230,18 +1367,53 @@ func _on_route_finished(body: Node3D) -> void:
 
 
 func _load_progress() -> void:
+	_load_progress_from(SAVE_PATH)
+
+
+func _load_progress_from(path: String) -> void:
 	var config := ConfigFile.new()
-	if config.load(SAVE_PATH) != OK:
+	if config.load(path) != OK:
 		return
 	roadside_stamps = maxi(0, int(config.get_value("progress", "roadside_stamps", 0)))
 	best_distance = maxf(0.0, float(config.get_value("progress", "best_distance", 0.0)))
+	var saved_landmarks: PackedStringArray = config.get_value(
+		"progress",
+		"discovered_landmarks",
+		PackedStringArray()
+	)
+	for landmark_text in saved_landmarks:
+		var landmark_id := StringName(landmark_text)
+		if LANDMARK_IDS.has(landmark_id):
+			discovered_landmarks[landmark_id] = true
+	# The original save format only had a diner stamp. Preserve that discovery
+	# when migrating existing players into the landmark progression.
+	if discovered_landmarks.is_empty() and roadside_stamps > 0:
+		discovered_landmarks[&"diner"] = true
+	roadside_stamps = maxi(roadside_stamps, discovered_landmarks.size())
+	selected_paint_scheme = clampi(
+		int(config.get_value("progress", "selected_paint_scheme", 0)),
+		0,
+		_maximum_unlocked_paint_scheme()
+	)
 
 
 func _save_progress() -> void:
+	if not progress_persistence_enabled:
+		return
+	_save_progress_to(SAVE_PATH)
+
+
+func _save_progress_to(path: String) -> void:
 	var config := ConfigFile.new()
 	config.set_value("progress", "roadside_stamps", roadside_stamps)
 	config.set_value("progress", "best_distance", maxf(best_distance, trip_distance))
-	var error := config.save(SAVE_PATH)
+	var saved_landmarks := PackedStringArray()
+	for landmark_id in LANDMARK_IDS:
+		if discovered_landmarks.has(landmark_id):
+			saved_landmarks.append(String(landmark_id))
+	config.set_value("progress", "discovered_landmarks", saved_landmarks)
+	config.set_value("progress", "selected_paint_scheme", selected_paint_scheme)
+	var error := config.save(path)
 	if error != OK:
 		push_warning("Could not save Cozy Roads progress: %s" % error_string(error))
 
@@ -1474,9 +1646,9 @@ func _build_ui() -> void:
 
 	controls_panel = PanelContainer.new()
 	controls_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	controls_panel.offset_left = -280.0
+	controls_panel.offset_left = -330.0
 	controls_panel.offset_top = -47.0
-	controls_panel.offset_right = 280.0
+	controls_panel.offset_right = 330.0
 	controls_panel.offset_bottom = -16.0
 	controls_panel.add_theme_stylebox_override(
 		"panel",
@@ -1484,7 +1656,7 @@ func _build_ui() -> void:
 	)
 	layer.add_child(controls_panel)
 	var controls_label := Label.new()
-	controls_label.text = "WASD DRIVE   •   LMB ORBIT   •   R RESET   •   T TIME   •   M AUDIO"
+	controls_label.text = "WASD DRIVE   •   LMB ORBIT   •   C PAINT   •   R RESET   •   T TIME   •   M AUDIO"
 	controls_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	controls_label.add_theme_font_size_override("font_size", 12)
 	controls_label.add_theme_color_override("font_color", Color("c3cbca"))

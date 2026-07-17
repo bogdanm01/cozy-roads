@@ -57,6 +57,16 @@ var contact_shadow: MeshInstance3D
 var engine_audio: AudioStreamPlayer3D
 var engine_playback: AudioStreamGeneratorPlayback
 var engine_phase := 0.0
+var paint_material: StandardMaterial3D
+var paint_light_material: StandardMaterial3D
+var paint_dark_material: StandardMaterial3D
+var paint_scheme_index := 0
+
+const PAINT_SCHEMES := [
+	[Color("a95034"), Color("bd7655"), Color("6f2d21")],
+	[Color("355c4d"), Color("62806b"), Color("203c35")],
+	[Color("344b68"), Color("60738b"), Color("202f48")],
+]
 
 
 func _ready() -> void:
@@ -264,9 +274,12 @@ func _build_pickup() -> void:
 	body_root.name = "SuspendedBody"
 	visual_root.add_child(body_root)
 
-	var paint := _material(Color("a95034"))
-	var paint_light := _material(Color("bd7655"))
-	var paint_dark := _material(Color("6f2d21"))
+	paint_material = _material(Color("a95034"))
+	paint_light_material = _material(Color("bd7655"))
+	paint_dark_material = _material(Color("6f2d21"))
+	var paint := paint_material
+	var paint_light := paint_light_material
+	var paint_dark := paint_dark_material
 	var charcoal := _material(Color("17191b"))
 	var bumper := _material(Color("555c65"))
 	var chrome := _material(Color("aab0b4"), 0.55)
@@ -358,6 +371,20 @@ func _build_pickup() -> void:
 func set_headlights_enabled(enabled: bool) -> void:
 	for light in headlight_beams:
 		light.visible = enabled
+
+
+func set_paint_scheme(index: int) -> void:
+	paint_scheme_index = clampi(index, 0, PAINT_SCHEMES.size() - 1)
+	if not (
+		is_instance_valid(paint_material)
+		and is_instance_valid(paint_light_material)
+		and is_instance_valid(paint_dark_material)
+	):
+		return
+	var colors: Array = PAINT_SCHEMES[paint_scheme_index]
+	paint_material.albedo_color = colors[0]
+	paint_light_material.albedo_color = colors[1]
+	paint_dark_material.albedo_color = colors[2]
 
 
 func _add_box_collider(node_name: String, size: Vector3, local_position: Vector3) -> void:

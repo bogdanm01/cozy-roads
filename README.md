@@ -4,9 +4,12 @@ A warm, low-poly endless driving game built with Godot 4.7.
 
 ## Playable MVP
 
-Start directly on the scenic road, pull into the illuminated roadside diner for
-a stamp, and continue through the glowing gateway onto a deterministic endless
-road. Best trip distance and collected stamps persist between launches.
+Start directly on the scenic road, discover the moonlit overlook, lantern
+bridge, roadside diner, and forest cabin, then continue through the glowing
+gateway onto a deterministic endless road. Each place awards one persistent
+stamp; two stamps unlock pine-green paint and all four unlock midnight blue.
+Best trip distance, discoveries, and the selected truck finish persist between
+launches.
 
 The pickup uses custom weighty handling, full-vehicle terrain alignment,
 independent visual suspension, acceleration squat, braking dive, steering roll,
@@ -40,6 +43,7 @@ streamed chunks add deterministic rocks and reflective wayfinding signs.
 - `S` / `Down`: brake and reverse
 - `A D` / arrow keys: steer
 - Hold left mouse and drag: orbit the camera
+- `C`: cycle through unlocked truck paint
 - `R`: reset the car
 - `T`: advance the clock by one hour
 - `M`: mute/unmute audio
@@ -52,8 +56,9 @@ when terrain or scenery would otherwise block the view.
 
 The compact HUD keeps the current objective and route progress in the upper
 corner, speed and steering in the lower corner, and performance in the opposite
-corner. Contextual toasts confirm stamps, the endless-road gateway, and audio
-changes; the controls reminder fades after the opening seconds.
+corner. Contextual toasts confirm scenic stamps, paint unlocks, the endless-road
+gateway, and audio changes; the controls reminder fades after the opening
+seconds.
 
 ## Performance
 
@@ -64,7 +69,8 @@ with traffic measured 96.2 FPS average / 87 FPS minimum. The daylight shadow
 pass with continuous hill geometry measured 95.3 FPS average / 88 FPS minimum.
 The polished night HUD and camera pass measured 98.5 FPS average / 98 FPS
 minimum; with the complete live procedural soundscape active it measured 92.0
-FPS average / 85 FPS minimum.
+FPS average / 85 FPS minimum. The current landmark-progression build measured
+102.3 FPS average / 96 FPS minimum in the same 2560×1440 night pass.
 Road surfaces, hillside ribbons, markings,
 reflectors, trees, rocks, and ambient-occlusion cards are batched; endless chunks
 are capped at 12 active sections and traffic is capped at five pooled vehicles.
