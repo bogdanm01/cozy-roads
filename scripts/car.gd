@@ -10,11 +10,12 @@ const MAX_REVERSE_SPEED := 6.0
 const ENGINE_ACCELERATION := 3.1
 const REVERSE_ACCELERATION := 2.0
 const BRAKE_POWER := 9.2
-const ROLLING_DRAG := 0.55
+const ROLLING_DRAG := 0.34
 const AERO_DRAG := 0.0028
 const GRAVITY := 24.0
 const ROAD_GRAVITY := 9.81
-const GRADE_EFFECT := 0.46
+const UPHILL_GRADE_EFFECT := 0.65
+const DOWNHILL_GRADE_EFFECT := 1.05
 
 const WHEELBASE := 3.15
 const LOW_SPEED_STEERING_ANGLE := deg_to_rad(31.0)
@@ -155,12 +156,22 @@ func _update_speed(throttle: float, forward: Vector3, delta: float) -> void:
 		var drag := ROLLING_DRAG + AERO_DRAG * speed * speed
 		speed = move_toward(speed, 0.0, drag * delta)
 
-	# Gravity projected onto the current floor adds modest grade load. Climbs now
-	# consume momentum and descents coast naturally without overpowering braking.
+	# Gravity projected onto the current floor resists climbs and adds real
+	# momentum on descents. Downhill uses the full slope component, while a
+	# slightly reduced uphill component keeps the relaxed pickup driveable.
 	if is_on_floor():
 		var slope_gravity := (Vector3.DOWN * ROAD_GRAVITY).slide(get_floor_normal())
-		var grade_acceleration := slope_gravity.dot(forward) * GRADE_EFFECT
-		speed += grade_acceleration * delta
+		var raw_grade_acceleration := slope_gravity.dot(forward)
+		var travel_sign := signf(speed)
+		if absf(speed) < 0.10 and absf(throttle) > 0.05:
+			travel_sign = signf(throttle)
+		var moving_with_grade := raw_grade_acceleration * travel_sign > 0.0
+		var grade_effect := (
+			DOWNHILL_GRADE_EFFECT
+			if moving_with_grade
+			else UPHILL_GRADE_EFFECT
+		)
+		speed += raw_grade_acceleration * grade_effect * delta
 	speed = clampf(speed, -MAX_REVERSE_SPEED, MAX_FORWARD_SPEED)
 
 

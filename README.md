@@ -9,15 +9,18 @@ a stamp, and continue through the glowing gateway onto a deterministic endless
 road. Best trip distance and collected stamps persist between launches.
 
 The pickup uses custom weighty handling, terrain-aware body attitude, independent
-visual suspension, acceleration squat, braking dive, steering roll, headlights,
-brake lights, and procedural engine audio. An eight-minute day/night cycle moves
+visual suspension, acceleration squat, braking dive, steering roll, and
+direction-aware grade forces that build speed while coasting downhill. It also
+includes headlights, brake lights, and procedural engine audio. An eight-minute day/night cycle moves
 from starry nights through warm dawn and dusk into clear daylight, continuously
 blending the sky, sun, moon, fog, ambient light, and vehicle headlights. The
 world includes reflective road studs, forest scenery, guardrails, utility
 lights, and a GPU-batched streaming road that recycles old chunks. The opening
 route climbs and descends through handcrafted hills, while generated terrain
-continues into long rolling grades beyond the gateway. Catmull-Rom centerlines
-keep the roads flowing through continuous bends; pavement, hillside collision,
+continues into larger, long rolling grades beyond the gateway. Continuous
+centerline ribbons eliminate visible terrain seams and collision lips, while
+Catmull-Rom centerlines keep the roads flowing through continuous bends.
+Pavement, hillside collision,
 traffic, markings, barriers, and roadside props all follow the same sampled
 three-dimensional route.
 
@@ -49,8 +52,8 @@ The default `FAST AO` mode targets at least 60 FPS at 2560×1440. On an Apple M1
 Pro using the Compatibility renderer, the illuminated scenic route with live
 traffic measured 99.0 FPS average / 97 FPS minimum; the curved endless section
 with traffic measured 96.2 FPS average / 87 FPS minimum. The daylight shadow
-pass with rolling hill geometry measured 95.4 FPS average / 89 FPS minimum.
-Road surfaces, hillside strips, markings,
+pass with continuous hill geometry measured 95.3 FPS average / 88 FPS minimum.
+Road surfaces, hillside ribbons, markings,
 reflectors, trees, rocks, and ambient-occlusion cards are batched; endless chunks
 are capped at 12 active sections and traffic is capped at five pooled vehicles.
 

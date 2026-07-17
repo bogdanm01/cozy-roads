@@ -4,7 +4,7 @@ extends Node3D
 const MeshFactory := preload("res://scripts/low_poly_mesh.gd")
 
 const CHUNK_LENGTH := 48.0
-const CURVE_SUBDIVISIONS := 6
+const CURVE_SUBDIVISIONS := 24
 const ROAD_WIDTH := 10.625
 const SHOULDER_WIDTH := 14.75
 const TERRAIN_WIDTH := 46.0
@@ -40,7 +40,6 @@ var _wayfinding_material: StandardMaterial3D
 
 var _marking_mesh: BoxMesh
 var _reflector_mesh: ArrayMesh
-var _unit_box_mesh: BoxMesh
 var _trunk_mesh: CylinderMesh
 var _lower_foliage_mesh: CylinderMesh
 var _upper_foliage_mesh: CylinderMesh
@@ -193,7 +192,7 @@ func _append_chunk() -> void:
 		)
 		var next_y := start_point.y + _elevation_offset(absolute_distance)
 		var delta_y := next_y - previous_point.y
-		# Keep the full 3D segment length at eight metres. sample_distance() can
+		# Keep the full 3D segment length at two metres. sample_distance() can
 		# therefore continue treating route distance as real distance travelled.
 		var horizontal_length := sqrt(
 			maxf(0.01, subdivision_length * subdivision_length - delta_y * delta_y)
@@ -240,8 +239,8 @@ func _elevation_offset(distance: float) -> float:
 	# without exceeding a relaxed road grade. Both start with zero height and
 	# zero grade, guaranteeing a seamless join at the scenic gateway.
 	return (
-		(1.0 - cos(distance * 0.018)) * 3.3
-		+ (1.0 - cos(distance * 0.006)) * 1.2
+		(1.0 - cos(distance * 0.018)) * 5.0
+		+ (1.0 - cos(distance * 0.006)) * 2.0
 	)
 
 
@@ -261,61 +260,42 @@ func _build_ground(chunk: Node3D, points: Array[Vector3]) -> void:
 	ground.collision_mask = 0
 	chunk.add_child(ground)
 
-	var terrain_transforms: Array[Transform3D] = []
-	for segment_index in points.size() - 1:
-		var from := points[segment_index]
-		var to := points[segment_index + 1]
-		var direction := to - from
-		var distance := direction.length()
-		var rotation := _road_basis(direction)
-		var surface_normal := rotation.y
-		var terrain_size := Vector3(TERRAIN_WIDTH, 0.50, distance + 0.85)
-		var terrain_center := (from + to) * 0.5 - surface_normal * 0.25
-		terrain_transforms.append(
-			Transform3D(rotation * Basis.from_scale(terrain_size), terrain_center)
-		)
-
-		var collision_shape := CollisionShape3D.new()
-		var ground_shape := BoxShape3D.new()
-		ground_shape.size = terrain_size
-		collision_shape.shape = ground_shape
-		collision_shape.transform = Transform3D(rotation, terrain_center)
-		ground.add_child(collision_shape)
-	_add_multimesh(
+	var collision_shape := CollisionShape3D.new()
+	var ground_shape := ConcavePolygonShape3D.new()
+	ground_shape.set_faces(MeshFactory.ribbon_collision_faces(points, TERRAIN_WIDTH))
+	collision_shape.shape = ground_shape
+	ground.add_child(collision_shape)
+	_add_ribbon_mesh(
 		chunk,
 		"ForestFloor",
-		_unit_box_mesh,
+		points,
+		TERRAIN_WIDTH,
+		0.0,
 		_terrain_material,
-		terrain_transforms,
-		false,
 		280.0
 	)
 
 
 
 func _build_curved_surface(chunk: Node3D, points: Array[Vector3]) -> void:
-	var shoulder_transforms: Array[Transform3D] = []
-	var road_transforms: Array[Transform3D] = []
-	for segment_index in points.size() - 1:
-		var from := points[segment_index]
-		var to := points[segment_index + 1]
-		var direction := to - from
-		var distance := direction.length()
-		var rotation := _road_basis(direction)
-		var surface_normal := rotation.y
-		var center := (from + to) * 0.5
-		var shoulder_basis := (
-			rotation
-			* Basis.from_scale(Vector3(SHOULDER_WIDTH, 0.055, distance + 0.55))
-		)
-		var road_basis := (
-			rotation
-			* Basis.from_scale(Vector3(ROAD_WIDTH, 0.055, distance + 0.60))
-		)
-		shoulder_transforms.append(Transform3D(shoulder_basis, center + surface_normal * 0.002))
-		road_transforms.append(Transform3D(road_basis, center + surface_normal * 0.040))
-	_add_multimesh(chunk, "GravelShoulder", _unit_box_mesh, _shoulder_material, shoulder_transforms, false, 260.0)
-	_add_multimesh(chunk, "RoadSurface", _unit_box_mesh, _road_material, road_transforms, false, 260.0)
+	_add_ribbon_mesh(
+		chunk,
+		"GravelShoulder",
+		points,
+		SHOULDER_WIDTH,
+		0.030,
+		_shoulder_material,
+		260.0
+	)
+	_add_ribbon_mesh(
+		chunk,
+		"RoadSurface",
+		points,
+		ROAD_WIDTH,
+		0.068,
+		_road_material,
+		260.0
+	)
 
 
 func _build_markings(chunk: Node3D, points: Array[Vector3]) -> void:
@@ -494,6 +474,24 @@ func _add_multimesh(
 	parent.add_child(instance)
 
 
+func _add_ribbon_mesh(
+	parent: Node3D,
+	node_name: String,
+	points: Array[Vector3],
+	width: float,
+	normal_offset: float,
+	material: Material,
+	visibility_end: float
+) -> void:
+	var instance := MeshInstance3D.new()
+	instance.name = node_name
+	instance.mesh = MeshFactory.ribbon(points, width, normal_offset)
+	instance.material_override = material
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	instance.visibility_range_end = visibility_end
+	parent.add_child(instance)
+
+
 func _add_box_mesh(
 	parent: Node3D,
 	node_name: String,
@@ -601,8 +599,6 @@ func _build_shared_resources() -> void:
 	_marking_mesh = BoxMesh.new()
 	_marking_mesh.size = Vector3(0.115, 0.018, 2.35)
 	_reflector_mesh = MeshFactory.beveled_box(Vector3(0.15, 0.055, 0.24), 0.016)
-	_unit_box_mesh = BoxMesh.new()
-	_unit_box_mesh.size = Vector3.ONE
 	_trunk_mesh = CylinderMesh.new()
 	_trunk_mesh.top_radius = 0.21
 	_trunk_mesh.bottom_radius = 0.33

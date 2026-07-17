@@ -96,6 +96,88 @@ static func soft_disc(segments := 32) -> ArrayMesh:
 	return surface.commit()
 
 
+static func ribbon(points: Array[Vector3], width: float, normal_offset := 0.0) -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if points.size() < 2:
+		return surface.commit()
+	var frames := _ribbon_frames(points, width, normal_offset)
+	var left: Array[Vector3] = frames["left"]
+	var right: Array[Vector3] = frames["right"]
+	var normals: Array[Vector3] = frames["normals"]
+	for index in points.size() - 1:
+		_add_smooth_triangle(
+			surface,
+			left[index],
+			left[index + 1],
+			right[index + 1],
+			normals[index],
+			normals[index + 1],
+			normals[index + 1]
+		)
+		_add_smooth_triangle(
+			surface,
+			left[index],
+			right[index + 1],
+			right[index],
+			normals[index],
+			normals[index + 1],
+			normals[index]
+		)
+	return surface.commit()
+
+
+static func ribbon_collision_faces(
+	points: Array[Vector3],
+	width: float,
+	normal_offset := 0.0
+) -> PackedVector3Array:
+	var faces := PackedVector3Array()
+	if points.size() < 2:
+		return faces
+	var frames := _ribbon_frames(points, width, normal_offset)
+	var left: Array[Vector3] = frames["left"]
+	var right: Array[Vector3] = frames["right"]
+	for index in points.size() - 1:
+		# Godot uses clockwise front faces. These wind upward when viewed from
+		# the driveable side of the ribbon.
+		faces.append(left[index])
+		faces.append(right[index + 1])
+		faces.append(left[index + 1])
+		faces.append(left[index])
+		faces.append(right[index])
+		faces.append(right[index + 1])
+	return faces
+
+
+static func _ribbon_frames(
+	points: Array[Vector3],
+	width: float,
+	normal_offset: float
+) -> Dictionary:
+	var left: Array[Vector3] = []
+	var right: Array[Vector3] = []
+	var normals: Array[Vector3] = []
+	var half_width := width * 0.5
+	for index in points.size():
+		var previous := points[maxi(0, index - 1)]
+		var following := points[mini(points.size() - 1, index + 1)]
+		var tangent := (following - previous).normalized()
+		var lateral := Vector3.UP.cross(tangent).normalized()
+		if lateral.length_squared() < 0.001:
+			lateral = Vector3.RIGHT
+		var normal := tangent.cross(lateral).normalized()
+		var center := points[index] + normal * normal_offset
+		left.append(center - lateral * half_width)
+		right.append(center + lateral * half_width)
+		normals.append(normal)
+	return {
+		"left": left,
+		"right": right,
+		"normals": normals,
+	}
+
+
 static func _add_quad(surface: SurfaceTool, vertices: Array[Vector3], normal: Vector3) -> void:
 	_add_triangle(surface, vertices[0], vertices[1], vertices[2], normal)
 	_add_triangle(surface, vertices[0], vertices[2], vertices[3], normal)
@@ -111,3 +193,29 @@ static func _add_triangle(surface: SurfaceTool, a: Vector3, b: Vector3, c: Vecto
 	for vertex in [a, b, c]:
 		surface.set_normal(normal)
 		surface.add_vertex(vertex)
+
+
+static func _add_smooth_triangle(
+	surface: SurfaceTool,
+	a: Vector3,
+	b: Vector3,
+	c: Vector3,
+	normal_a: Vector3,
+	normal_b: Vector3,
+	normal_c: Vector3
+) -> void:
+	var expected_normal := (normal_a + normal_b + normal_c).normalized()
+	if (b - a).cross(c - a).dot(expected_normal) > 0.0:
+		var swap_vertex := b
+		b = c
+		c = swap_vertex
+		var swap_normal := normal_b
+		normal_b = normal_c
+		normal_c = swap_normal
+	for vertex_data in [
+		[a, normal_a],
+		[b, normal_b],
+		[c, normal_c],
+	]:
+		surface.set_normal(vertex_data[1])
+		surface.add_vertex(vertex_data[0])

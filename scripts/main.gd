@@ -9,7 +9,7 @@ const SAVE_PATH := "user://cozy_roads.cfg"
 
 const WHITE := Color("d8dadb")
 const ROAD_WIDTH := 10.625
-const ROAD_CURVE_SUBDIVISIONS := 10
+const ROAD_CURVE_SUBDIVISIONS := 16
 const DAY_DURATION_SECONDS := 480.0
 const SKY_UPDATE_INTERVAL := 0.25
 const START_TIME_HOURS := 20.5
@@ -34,9 +34,6 @@ var amber_reflector_material: StandardMaterial3D
 var road_reflector_mesh: ArrayMesh
 var white_reflector_transforms: Array[Transform3D] = []
 var amber_reflector_transforms: Array[Transform3D] = []
-var curved_road_surface_transforms: Array[Transform3D] = []
-var curved_road_shoulder_transforms: Array[Transform3D] = []
-var curved_terrain_transforms: Array[Transform3D] = []
 var curved_road_edge_transforms: Array[Transform3D] = []
 var curved_road_dash_transforms: Array[Transform3D] = []
 var curved_road_dash_index := 0
@@ -485,7 +482,7 @@ func _build_scenic_route() -> void:
 	)
 	scenic_route_controls = [
 		Vector3(19.0, 0.0, -122.0),
-		Vector3(18.0, 4.5, -151.0),
+		Vector3(18.0, 6.0, -151.0),
 		Vector3(8.0, 0.0, -181.0),
 		Vector3(-13.0, 0.0, -209.0),
 		Vector3(-7.0, 0.0, -239.0),
@@ -493,7 +490,7 @@ func _build_scenic_route() -> void:
 		Vector3(27.0, 0.0, -304.0),
 		Vector3(17.0, 0.0, -338.0),
 		Vector3(-4.0, 0.0, -372.0),
-		Vector3(-3.0, 5.0, -408.0),
+		Vector3(-3.0, 7.5, -408.0),
 	]
 	scenic_route_points = _sample_catmull_rom_path(
 		scenic_route_controls,
@@ -504,6 +501,13 @@ func _build_scenic_route() -> void:
 	for index in scenic_route_points.size() - 1:
 		route_total_length += scenic_route_points[index].distance_to(scenic_route_points[index + 1])
 		_add_scenic_road_segment(scenic_route_points[index], scenic_route_points[index + 1], ROAD_WIDTH)
+	var collision_shape := CollisionShape3D.new()
+	var terrain_shape := ConcavePolygonShape3D.new()
+	terrain_shape.set_faces(
+		MeshFactory.ribbon_collision_faces(scenic_route_points, 72.0)
+	)
+	collision_shape.shape = terrain_shape
+	scenic_hill_collision_body.add_child(collision_shape)
 	_build_scenic_forest()
 	_build_scenic_guardrails()
 	_build_utility_line()
@@ -516,33 +520,6 @@ func _build_scenic_route() -> void:
 
 
 func _add_scenic_road_segment(from: Vector3, to: Vector3, width: float) -> void:
-	var direction := to - from
-	var distance := direction.length()
-	var midpoint := (from + to) * 0.5
-	var rotation := _road_basis(direction)
-	var surface_normal := rotation.y
-	var shoulder_basis := rotation * Basis.from_scale(
-		Vector3(width + 2.4, 0.07, distance + 0.65)
-	)
-	curved_road_shoulder_transforms.append(
-		Transform3D(shoulder_basis, midpoint + surface_normal * 0.065)
-	)
-
-	# A broad sloped strip raises the forest floor with the road. The original
-	# large ground slab remains underneath as distant terrain, while these
-	# overlapping pieces form the actual driveable hillside corridor.
-	var terrain_size := Vector3(72.0, 0.50, distance + 0.85)
-	# Its top sits two centimetres above the distant ground slab on level
-	# sections, preventing coplanar terrain surfaces from z-fighting.
-	var terrain_center := midpoint - surface_normal * 0.25
-	var terrain_basis := rotation * Basis.from_scale(terrain_size)
-	curved_terrain_transforms.append(Transform3D(terrain_basis, terrain_center))
-	var collision_shape := CollisionShape3D.new()
-	var terrain_shape := BoxShape3D.new()
-	terrain_shape.size = terrain_size
-	collision_shape.shape = terrain_shape
-	collision_shape.transform = Transform3D(rotation, terrain_center)
-	scenic_hill_collision_body.add_child(collision_shape)
 	_add_road_test_segment(from, to, width)
 
 
@@ -1192,8 +1169,6 @@ func _add_road_test_segment(from: Vector3, to: Vector3, width: float) -> void:
 	var surface_normal := rotation.y
 	var perpendicular := rotation.x
 	var midpoint := (from + to) * 0.5 + surface_normal * 0.09
-	var road_basis := rotation * Basis.from_scale(Vector3(width, 0.05, distance + 0.35))
-	curved_road_surface_transforms.append(Transform3D(road_basis, midpoint))
 
 	for side in [-1.0, 1.0]:
 		var edge_position: Vector3 = (
@@ -1228,26 +1203,44 @@ func _add_road_test_segment(from: Vector3, to: Vector3, width: float) -> void:
 func _finish_curved_road_batches() -> void:
 	var unit_box := BoxMesh.new()
 	unit_box.size = Vector3.ONE
-	_add_road_multimesh(
+	_add_route_ribbon(
 		"ScenicHillTerrain",
-		unit_box,
-		curved_terrain_transforms,
+		72.0,
+		0.0,
 		_material(Color("18241f"))
 	)
-	_add_road_multimesh(
+	_add_route_ribbon(
 		"CurvedRoadShoulders",
-		unit_box,
-		curved_road_shoulder_transforms,
+		ROAD_WIDTH + 2.4,
+		0.100,
 		_material(Color("493f37"))
 	)
-	_add_road_multimesh(
+	_add_route_ribbon(
 		"CurvedRoadSurface",
-		unit_box,
-		curved_road_surface_transforms,
+		ROAD_WIDTH,
+		0.115,
 		_material(Color("363a3c"))
 	)
 	_add_road_multimesh("CurvedRoadEdges", unit_box, curved_road_edge_transforms, _material(WHITE))
 	_add_road_multimesh("CurvedRoadDashes", unit_box, curved_road_dash_transforms, _material(WHITE))
+
+
+func _add_route_ribbon(
+	node_name: String,
+	width: float,
+	normal_offset: float,
+	material: Material
+) -> void:
+	var instance := MeshInstance3D.new()
+	instance.name = node_name
+	instance.mesh = MeshFactory.ribbon(
+		scenic_route_points,
+		width,
+		normal_offset
+	)
+	instance.material_override = material
+	instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(instance)
 
 
 func _add_road_multimesh(
