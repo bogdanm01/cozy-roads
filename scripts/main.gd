@@ -5,6 +5,7 @@ const CameraScript := preload("res://scripts/follow_camera.gd")
 const MeshFactory := preload("res://scripts/low_poly_mesh.gd")
 const EndlessRoadScript := preload("res://scripts/endless_road.gd")
 const TrafficManagerScript := preload("res://scripts/traffic_manager.gd")
+const SoundscapeScript := preload("res://scripts/cozy_soundscape.gd")
 const SAVE_PATH := "user://cozy_roads.cfg"
 
 const WHITE := Color("d8dadb")
@@ -21,6 +22,7 @@ const CABIN_POSITION := Vector3(-14.0, 0.0, -351.0)
 var player_car: CozyCar
 var endless_road: CozyEndlessRoad
 var traffic_manager: Node3D
+var soundscape: CozySoundscape
 var speed_value_label: Label
 var speed_detail_label: Label
 var drive_status_label: Label
@@ -107,6 +109,12 @@ func _ready() -> void:
 	traffic_manager.scenic_total_length = route_total_length
 	add_child(traffic_manager)
 
+	soundscape = SoundscapeScript.new()
+	soundscape.name = "CozySoundscape"
+	soundscape.target = player_car
+	soundscape.set_time_of_day(time_of_day_hours)
+	add_child(soundscape)
+
 	var camera := CozyFollowCamera.new()
 	camera.name = "FollowCamera"
 	camera.target = player_car
@@ -142,6 +150,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		audio_muted = not audio_muted
 		AudioServer.set_bus_mute(AudioServer.get_bus_index("Master"), audio_muted)
 		_show_toast("AUDIO MUTED" if audio_muted else "AUDIO RESTORED")
+		if not audio_muted and is_instance_valid(soundscape):
+			soundscape.play_progress_chime(520.0)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and event.pressed and not event.echo and event.physical_keycode == KEY_T:
 		set_time_of_day(time_of_day_hours + 1.0)
@@ -407,6 +417,8 @@ func _apply_day_night_state() -> void:
 		and is_instance_valid(moon_light)
 	):
 		return
+	if is_instance_valid(soundscape):
+		soundscape.set_time_of_day(time_of_day_hours)
 
 	var solar_angle := (time_of_day_hours - 6.0) / 24.0 * TAU
 	var sun_height := sin(solar_angle) * sin(deg_to_rad(65.0))
@@ -1202,6 +1214,8 @@ func _on_diner_entered(body: Node3D) -> void:
 	diner_reached = true
 	roadside_stamps += 1
 	_show_toast("ROADSIDE STAMP COLLECTED   •   +1")
+	if is_instance_valid(soundscape):
+		soundscape.play_progress_chime(660.0)
 	_save_progress()
 
 
@@ -1209,6 +1223,8 @@ func _on_route_finished(body: Node3D) -> void:
 	if body == player_car:
 		if not route_finished:
 			_show_toast("OPEN ROAD UNLOCKED   •   DRIVE AS FAR AS YOU LIKE")
+			if is_instance_valid(soundscape):
+				soundscape.play_progress_chime(520.0)
 		route_finished = true
 		_save_progress()
 

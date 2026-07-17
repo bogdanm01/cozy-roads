@@ -68,9 +68,10 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	engine_playback = null
 	if is_instance_valid(engine_audio):
 		engine_audio.stop()
-	engine_playback = null
+		engine_audio.stream = null
 
 
 func _physics_process(delta: float) -> void:

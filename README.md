@@ -11,7 +11,9 @@ road. Best trip distance and collected stamps persist between launches.
 The pickup uses custom weighty handling, full-vehicle terrain alignment,
 independent visual suspension, acceleration squat, braking dive, steering roll,
 and direction-aware grade forces that build speed while coasting downhill. It
-also includes headlights, brake lights, and procedural engine audio. An
+also includes headlights, brake lights, and layered procedural audio. The sound
+mix combines the truck engine with speed-responsive tire and wind texture,
+daytime birds, nighttime insects, and warm progression chimes. An
 eight-minute day/night cycle moves from starry nights through warm dawn and
 dusk into clear daylight, continuously
 blending the sky, sun, moon, fog, ambient light, and vehicle headlights. The
@@ -61,7 +63,8 @@ traffic measured 99.0 FPS average / 97 FPS minimum; the curved endless section
 with traffic measured 96.2 FPS average / 87 FPS minimum. The daylight shadow
 pass with continuous hill geometry measured 95.3 FPS average / 88 FPS minimum.
 The polished night HUD and camera pass measured 98.5 FPS average / 98 FPS
-minimum.
+minimum; with the complete live procedural soundscape active it measured 92.0
+FPS average / 85 FPS minimum.
 Road surfaces, hillside ribbons, markings,
 reflectors, trees, rocks, and ambient-occlusion cards are batched; endless chunks
 are capped at 12 active sections and traffic is capped at five pooled vehicles.
