@@ -14,10 +14,12 @@ brake lights, and procedural engine audio. An eight-minute day/night cycle moves
 from starry nights through warm dawn and dusk into clear daylight, continuously
 blending the sky, sun, moon, fog, ambient light, and vehicle headlights. The
 world includes reflective road studs, forest scenery, guardrails, utility
-lights, and a GPU-batched streaming road that recycles old chunks. Catmull-Rom
-centerlines keep the scenic and endless roads flowing through continuous bends;
+lights, and a GPU-batched streaming road that recycles old chunks. The opening
+route climbs and descends through handcrafted hills, while generated terrain
+continues into long rolling grades beyond the gateway. Catmull-Rom centerlines
+keep the roads flowing through continuous bends; pavement, hillside collision,
 traffic, markings, barriers, and roadside props all follow the same sampled
-curves.
+three-dimensional route.
 
 Sparse two-way traffic shares both the scenic and endless roads. Five pooled
 low-poly cars use separate lanes, varied cruising speeds, safe following gaps,
@@ -47,7 +49,8 @@ The default `FAST AO` mode targets at least 60 FPS at 2560×1440. On an Apple M1
 Pro using the Compatibility renderer, the illuminated scenic route with live
 traffic measured 99.0 FPS average / 97 FPS minimum; the curved endless section
 with traffic measured 96.2 FPS average / 87 FPS minimum. The daylight shadow
-pass measured 92.0 FPS average / 85 FPS minimum. Road surfaces, markings,
+pass with rolling hill geometry measured 95.4 FPS average / 89 FPS minimum.
+Road surfaces, hillside strips, markings,
 reflectors, trees, rocks, and ambient-occlusion cards are batched; endless chunks
 are capped at 12 active sections and traffic is capped at five pooled vehicles.
 

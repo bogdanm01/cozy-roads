@@ -152,16 +152,17 @@ func _place_at_sample(vehicle: CozyTrafficVehicle, sample: Dictionary, delta: fl
 	var lane_position := road_position - perpendicular * LANE_OFFSET * vehicle.travel_sign
 	lane_position.y += 0.015
 	var travel_direction := road_direction * vehicle.travel_sign
-	var target_yaw := atan2(-travel_direction.x, -travel_direction.z)
-	var applied_yaw := target_yaw
-	if immediate or delta <= 0.0:
-		applied_yaw = target_yaw
-	else:
-		applied_yaw = lerp_angle(vehicle.global_rotation.y, target_yaw, 1.0 - exp(-7.0 * delta))
+	var target_basis := Basis.looking_at(travel_direction, Vector3.UP)
+	var applied_basis := target_basis
+	if not immediate and delta > 0.0:
+		applied_basis = vehicle.global_basis.slerp(
+			target_basis,
+			1.0 - exp(-7.0 * delta)
+		).orthonormalized()
 	# AnimatableBody3D synchronizes a single transform into the physics server.
 	# Assigning position and rotation independently can make the second property
 	# write restore the previous synchronized origin, collapsing cars to (0, 0, 0).
-	vehicle.global_transform = Transform3D(Basis(Vector3.UP, applied_yaw), lane_position)
+	vehicle.global_transform = Transform3D(applied_basis, lane_position)
 
 
 func _sample_route(distance: float) -> Dictionary:
@@ -217,9 +218,18 @@ func _project_scenic(position_3d: Vector3) -> Dictionary:
 		var to := scenic_points[index + 1]
 		var segment := to - from
 		var length := segment.length()
-		var t := clampf((flat_position - from).dot(segment) / maxf(segment.length_squared(), 0.001), 0.0, 1.0)
-		var closest := from + segment * t
-		var lateral := flat_position.distance_to(closest)
+		var flat_from := Vector3(from.x, 0.0, from.z)
+		var flat_to := Vector3(to.x, 0.0, to.z)
+		var flat_segment := flat_to - flat_from
+		var t := clampf(
+			(flat_position - flat_from).dot(flat_segment)
+			/ maxf(flat_segment.length_squared(), 0.001),
+			0.0,
+			1.0
+		)
+		var closest := from.lerp(to, t)
+		var flat_closest := Vector3(closest.x, 0.0, closest.z)
+		var lateral := flat_position.distance_to(flat_closest)
 		if lateral < nearest_distance:
 			nearest_distance = lateral
 			var direction := segment.normalized()
@@ -229,7 +239,7 @@ func _project_scenic(position_3d: Vector3) -> Dictionary:
 				"direction": direction,
 				"distance": accumulated + length * t,
 				"lateral_distance": lateral,
-				"signed_lateral": (flat_position - closest).dot(perpendicular),
+				"signed_lateral": (flat_position - flat_closest).dot(perpendicular),
 			}
 		accumulated += length
 	return nearest

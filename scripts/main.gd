@@ -36,9 +36,11 @@ var white_reflector_transforms: Array[Transform3D] = []
 var amber_reflector_transforms: Array[Transform3D] = []
 var curved_road_surface_transforms: Array[Transform3D] = []
 var curved_road_shoulder_transforms: Array[Transform3D] = []
+var curved_terrain_transforms: Array[Transform3D] = []
 var curved_road_edge_transforms: Array[Transform3D] = []
 var curved_road_dash_transforms: Array[Transform3D] = []
 var curved_road_dash_index := 0
+var scenic_hill_collision_body: StaticBody3D
 var scenic_route_controls: Array[Vector3] = []
 var scenic_route_points: Array[Vector3] = []
 var scenic_route_segment_sources: Array[int] = []
@@ -74,8 +76,9 @@ func _ready() -> void:
 		scenic_route_points[spawn_index + 1]
 		- scenic_route_points[spawn_index]
 	).normalized()
+	var flat_spawn_direction := Vector3(spawn_direction.x, 0.0, spawn_direction.z).normalized()
 	player_car.transform = Transform3D(
-		Basis.looking_at(spawn_direction, Vector3.UP),
+		Basis.looking_at(flat_spawn_direction, Vector3.UP),
 		spawn_position
 	)
 	add_child(player_car)
@@ -105,6 +108,11 @@ func _ready() -> void:
 
 
 func _build_drive_world() -> void:
+	scenic_hill_collision_body = StaticBody3D.new()
+	scenic_hill_collision_body.name = "ScenicHillTerrainCollision"
+	scenic_hill_collision_body.collision_layer = 1
+	scenic_hill_collision_body.collision_mask = 0
+	add_child(scenic_hill_collision_body)
 	_build_scenic_route()
 	_finish_curved_road_batches()
 	_finish_road_reflectors()
@@ -443,7 +451,13 @@ func _sample_catmull_rom_path(
 		var p3 := control_points[mini(segment_index + 2, control_points.size() - 1)]
 		for step in range(1, safe_subdivisions + 1):
 			var t := float(step) / float(safe_subdivisions)
-			samples.append(_catmull_rom(p0, p1, p2, p3, t))
+			var sample := _catmull_rom(p0, p1, p2, p3, t)
+			# Catmull-Rom is ideal for the road's horizontal curve, but can dip
+			# below level terrain after a hill. Monotonic smoothstep elevation
+			# preserves level crests and valleys without overshoot.
+			var elevation_t := t * t * (3.0 - 2.0 * t)
+			sample.y = lerpf(p1.y, p2.y, elevation_t)
+			samples.append(sample)
 			source_segments.append(segment_index)
 	return samples
 
@@ -471,7 +485,7 @@ func _build_scenic_route() -> void:
 	)
 	scenic_route_controls = [
 		Vector3(19.0, 0.0, -122.0),
-		Vector3(18.0, 0.0, -151.0),
+		Vector3(18.0, 4.5, -151.0),
 		Vector3(8.0, 0.0, -181.0),
 		Vector3(-13.0, 0.0, -209.0),
 		Vector3(-7.0, 0.0, -239.0),
@@ -479,7 +493,7 @@ func _build_scenic_route() -> void:
 		Vector3(27.0, 0.0, -304.0),
 		Vector3(17.0, 0.0, -338.0),
 		Vector3(-4.0, 0.0, -372.0),
-		Vector3(-3.0, 0.0, -408.0),
+		Vector3(-3.0, 5.0, -408.0),
 	]
 	scenic_route_points = _sample_catmull_rom_path(
 		scenic_route_controls,
@@ -504,14 +518,41 @@ func _build_scenic_route() -> void:
 func _add_scenic_road_segment(from: Vector3, to: Vector3, width: float) -> void:
 	var direction := to - from
 	var distance := direction.length()
-	var midpoint := (from + to) * 0.5 + Vector3.UP * 0.065
-	var yaw := atan2(direction.x, direction.z)
-	var shoulder_basis := (
-		Basis.from_euler(Vector3(0.0, yaw, 0.0))
-		* Basis.from_scale(Vector3(width + 2.4, 0.07, distance + 0.65))
+	var midpoint := (from + to) * 0.5
+	var rotation := _road_basis(direction)
+	var surface_normal := rotation.y
+	var shoulder_basis := rotation * Basis.from_scale(
+		Vector3(width + 2.4, 0.07, distance + 0.65)
 	)
-	curved_road_shoulder_transforms.append(Transform3D(shoulder_basis, midpoint))
+	curved_road_shoulder_transforms.append(
+		Transform3D(shoulder_basis, midpoint + surface_normal * 0.065)
+	)
+
+	# A broad sloped strip raises the forest floor with the road. The original
+	# large ground slab remains underneath as distant terrain, while these
+	# overlapping pieces form the actual driveable hillside corridor.
+	var terrain_size := Vector3(72.0, 0.50, distance + 0.85)
+	# Its top sits two centimetres above the distant ground slab on level
+	# sections, preventing coplanar terrain surfaces from z-fighting.
+	var terrain_center := midpoint - surface_normal * 0.25
+	var terrain_basis := rotation * Basis.from_scale(terrain_size)
+	curved_terrain_transforms.append(Transform3D(terrain_basis, terrain_center))
+	var collision_shape := CollisionShape3D.new()
+	var terrain_shape := BoxShape3D.new()
+	terrain_shape.size = terrain_size
+	collision_shape.shape = terrain_shape
+	collision_shape.transform = Transform3D(rotation, terrain_center)
+	scenic_hill_collision_body.add_child(collision_shape)
 	_add_road_test_segment(from, to, width)
+
+
+func _road_basis(direction: Vector3) -> Basis:
+	var forward := direction.normalized()
+	var right := Vector3.UP.cross(forward).normalized()
+	if right.length_squared() < 0.001:
+		right = Vector3.RIGHT
+	var surface_normal := forward.cross(right).normalized()
+	return Basis(right, surface_normal, forward)
 
 
 func _build_scenic_forest() -> void:
@@ -631,7 +672,7 @@ func _add_tree_multimesh(node_name: String, mesh: Mesh, material: Material, tran
 	for index in transforms.size():
 		multimesh.set_instance_transform(index, transforms[index])
 	# All batches share the same broad route bounds, avoiding per-tree draw calls.
-	multimesh.custom_aabb = AABB(Vector3(-100.0, -1.0, -430.0), Vector3(200.0, 10.0, 330.0))
+	multimesh.custom_aabb = AABB(Vector3(-100.0, -3.0, -430.0), Vector3(200.0, 18.0, 330.0))
 	var instance := MultiMeshInstance3D.new()
 	instance.name = node_name
 	instance.multimesh = multimesh
@@ -692,13 +733,14 @@ func _add_guardrail_segment(segment_index: int, side: float) -> void:
 		var direction := to - from
 		var distance := direction.length()
 		var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
-		var yaw := atan2(direction.x, direction.z)
+		var rail_rotation := _road_basis(direction).get_euler()
+		var yaw := rail_rotation.y
 		var rail_center := (from + to) * 0.5 + perpendicular * 6.5 * side + Vector3.UP * 0.76
 		_add_static_box_rotated(
 			"Guardrail",
 			Vector3(0.18, 0.28, distance + 0.18),
 			rail_center,
-			Vector3(0.0, yaw, 0.0),
+			rail_rotation,
 			Color("737b81"),
 			true,
 			0.045
@@ -1146,20 +1188,23 @@ func _exit_tree() -> void:
 func _add_road_test_segment(from: Vector3, to: Vector3, width: float) -> void:
 	var direction := to - from
 	var distance := direction.length()
-	var midpoint := (from + to) * 0.5 + Vector3.UP * 0.09
-	var yaw := atan2(direction.x, direction.z)
-	var rotation_3d := Vector3(0.0, yaw, 0.0)
-	var rotation := Basis.from_euler(rotation_3d)
+	var rotation := _road_basis(direction)
+	var surface_normal := rotation.y
+	var perpendicular := rotation.x
+	var midpoint := (from + to) * 0.5 + surface_normal * 0.09
 	var road_basis := rotation * Basis.from_scale(Vector3(width, 0.05, distance + 0.35))
 	curved_road_surface_transforms.append(Transform3D(road_basis, midpoint))
 
-	var perpendicular := Vector3(direction.z, 0.0, -direction.x).normalized()
 	for side in [-1.0, 1.0]:
-		var edge_position: Vector3 = midpoint + perpendicular * width * 0.43 * side + Vector3.UP * 0.035
+		var edge_position: Vector3 = (
+			midpoint
+			+ perpendicular * width * 0.43 * side
+			+ surface_normal * 0.035
+		)
 		var edge_basis := rotation * Basis.from_scale(Vector3(0.12, 0.025, distance + 0.08))
 		curved_road_edge_transforms.append(Transform3D(edge_basis, edge_position))
 	if curved_road_dash_index % 2 == 0:
-		var dash_position := midpoint + Vector3.UP * 0.045
+		var dash_position := midpoint + surface_normal * 0.045
 		var dash_basis := (
 			rotation
 			* Basis.from_scale(Vector3(0.10, 0.026, minf(2.5, distance * 0.72)))
@@ -1172,13 +1217,23 @@ func _add_road_test_segment(from: Vector3, to: Vector3, width: float) -> void:
 	for stud_index in stud_count + 1:
 		var t := float(stud_index) / float(stud_count)
 		for side in [-1.0, 1.0]:
-			var stud_position: Vector3 = from.lerp(to, t) + perpendicular * width * 0.43 * side + Vector3.UP * 0.15
-			_add_road_reflector(stud_position, rotation_3d, false)
+			var stud_position: Vector3 = (
+				from.lerp(to, t)
+				+ perpendicular * width * 0.43 * side
+				+ surface_normal * 0.15
+			)
+			_add_road_reflector(stud_position, rotation.get_euler(), false)
 
 
 func _finish_curved_road_batches() -> void:
 	var unit_box := BoxMesh.new()
 	unit_box.size = Vector3.ONE
+	_add_road_multimesh(
+		"ScenicHillTerrain",
+		unit_box,
+		curved_terrain_transforms,
+		_material(Color("18241f"))
+	)
 	_add_road_multimesh(
 		"CurvedRoadShoulders",
 		unit_box,
@@ -1209,7 +1264,7 @@ func _add_road_multimesh(
 	multimesh.instance_count = transforms.size()
 	for index in transforms.size():
 		multimesh.set_instance_transform(index, transforms[index])
-	multimesh.custom_aabb = AABB(Vector3(-75.0, -1.0, -430.0), Vector3(150.0, 4.0, 475.0))
+	multimesh.custom_aabb = AABB(Vector3(-75.0, -3.0, -430.0), Vector3(150.0, 18.0, 475.0))
 	var instance := MultiMeshInstance3D.new()
 	instance.name = node_name
 	instance.multimesh = multimesh

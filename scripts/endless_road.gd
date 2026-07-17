@@ -60,8 +60,8 @@ func _process(_delta: float) -> void:
 	if nearest_record.is_empty():
 		return
 	var nearest_distance := _distance_to_record(target.global_position, nearest_record)
-	# Do no streaming work while the player is still exploring the proving ground
-	# and handcrafted route. The initial pool already waits beyond the gateway.
+	# Do no streaming work while the player is still exploring the handcrafted
+	# route. The initial pool already waits beyond the gateway.
 	if nearest_distance > STREAM_DISTANCE:
 		return
 	var nearest_index := int(nearest_record["index"])
@@ -80,7 +80,7 @@ func reset_stream() -> void:
 	if flat_direction.length_squared() < 0.5:
 		flat_direction = Vector3.FORWARD
 	_base_heading = atan2(flat_direction.x, flat_direction.z)
-	_next_start = Vector3(start_point.x, 0.0, start_point.z)
+	_next_start = start_point
 	_last_generated_index = -1
 	for _index in INITIAL_CHUNKS:
 		_append_chunk()
@@ -139,6 +139,7 @@ func project_position(position_3d: Vector3) -> Dictionary:
 	var closest: Vector3 = projection["position"]
 	var perpendicular := Vector3(direction.z, 0.0, -direction.x)
 	var flat_position := Vector3(position_3d.x, 0.0, position_3d.z)
+	var flat_closest := Vector3(closest.x, 0.0, closest.z)
 	var subdivision_length := CHUNK_LENGTH / float(CURVE_SUBDIVISIONS)
 	var local_distance := (
 		float(projection["segment_index"]) * subdivision_length
@@ -148,8 +149,8 @@ func project_position(position_3d: Vector3) -> Dictionary:
 		"position": closest,
 		"direction": direction,
 		"distance": float(record["index"]) * CHUNK_LENGTH + local_distance,
-		"lateral_distance": flat_position.distance_to(closest),
-		"signed_lateral": (flat_position - closest).dot(perpendicular),
+		"lateral_distance": flat_position.distance_to(flat_closest),
+		"signed_lateral": (flat_position - flat_closest).dot(perpendicular),
 		"chunk_index": int(record["index"]),
 	}
 
@@ -186,17 +187,27 @@ func _append_chunk() -> void:
 		var heading := lerp_angle(start_heading, end_heading, t)
 		var subdivision_direction := Vector3(sin(heading), 0.0, cos(heading))
 		var previous_point: Vector3 = points[points.size() - 1]
-		points.append(previous_point + subdivision_direction * subdivision_length)
+		var absolute_distance := (
+			float(logical_index) * CHUNK_LENGTH
+			+ float(subdivision_index + 1) * subdivision_length
+		)
+		var next_y := start_point.y + _elevation_offset(absolute_distance)
+		var delta_y := next_y - previous_point.y
+		# Keep the full 3D segment length at eight metres. sample_distance() can
+		# therefore continue treating route distance as real distance travelled.
+		var horizontal_length := sqrt(
+			maxf(0.01, subdivision_length * subdivision_length - delta_y * delta_y)
+		)
+		var next_point := previous_point + subdivision_direction * horizontal_length
+		next_point.y = next_y
+		points.append(next_point)
 	var to: Vector3 = points[points.size() - 1]
-	var direction := (to - from).normalized()
-	var center := (from + to) * 0.5
-	var yaw := atan2(direction.x, direction.z)
 
 	var chunk := Node3D.new()
 	chunk.name = "EndlessRoadChunk%04d" % logical_index
 	chunk.set_meta("logical_index", logical_index)
 	add_child(chunk)
-	_build_ground(chunk, center, yaw)
+	_build_ground(chunk, points)
 	_build_curved_surface(chunk, points)
 	_build_markings(chunk, points)
 	_build_trees(chunk, logical_index, points)
@@ -224,30 +235,61 @@ func _heading_for_index(logical_index: int) -> float:
 	return _base_heading + offset
 
 
-func _build_ground(chunk: Node3D, center: Vector3, yaw: float) -> void:
-	var terrain_size := Vector3(TERRAIN_WIDTH, 0.50, CHUNK_LENGTH + 2.2)
+func _elevation_offset(distance: float) -> float:
+	# Two broad cosine waves create long climbs and rolling secondary hills
+	# without exceeding a relaxed road grade. Both start with zero height and
+	# zero grade, guaranteeing a seamless join at the scenic gateway.
+	return (
+		(1.0 - cos(distance * 0.018)) * 3.3
+		+ (1.0 - cos(distance * 0.006)) * 1.2
+	)
+
+
+func _road_basis(direction: Vector3) -> Basis:
+	var forward := direction.normalized()
+	var right := Vector3.UP.cross(forward).normalized()
+	if right.length_squared() < 0.001:
+		right = Vector3.RIGHT
+	var surface_normal := forward.cross(right).normalized()
+	return Basis(right, surface_normal, forward)
+
+
+func _build_ground(chunk: Node3D, points: Array[Vector3]) -> void:
 	var ground := StaticBody3D.new()
 	ground.name = "TerrainCollision"
-	ground.position = center + Vector3.DOWN * 0.29
-	ground.rotation.y = yaw
 	ground.collision_layer = 1
 	ground.collision_mask = 0
 	chunk.add_child(ground)
 
-	var terrain_mesh := MeshInstance3D.new()
-	terrain_mesh.name = "ForestFloor"
-	var terrain_box := BoxMesh.new()
-	terrain_box.size = terrain_size
-	terrain_mesh.mesh = terrain_box
-	terrain_mesh.material_override = _terrain_material
-	terrain_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	ground.add_child(terrain_mesh)
+	var terrain_transforms: Array[Transform3D] = []
+	for segment_index in points.size() - 1:
+		var from := points[segment_index]
+		var to := points[segment_index + 1]
+		var direction := to - from
+		var distance := direction.length()
+		var rotation := _road_basis(direction)
+		var surface_normal := rotation.y
+		var terrain_size := Vector3(TERRAIN_WIDTH, 0.50, distance + 0.85)
+		var terrain_center := (from + to) * 0.5 - surface_normal * 0.25
+		terrain_transforms.append(
+			Transform3D(rotation * Basis.from_scale(terrain_size), terrain_center)
+		)
 
-	var collision_shape := CollisionShape3D.new()
-	var ground_shape := BoxShape3D.new()
-	ground_shape.size = terrain_size
-	collision_shape.shape = ground_shape
-	ground.add_child(collision_shape)
+		var collision_shape := CollisionShape3D.new()
+		var ground_shape := BoxShape3D.new()
+		ground_shape.size = terrain_size
+		collision_shape.shape = ground_shape
+		collision_shape.transform = Transform3D(rotation, terrain_center)
+		ground.add_child(collision_shape)
+	_add_multimesh(
+		chunk,
+		"ForestFloor",
+		_unit_box_mesh,
+		_terrain_material,
+		terrain_transforms,
+		false,
+		280.0
+	)
 
 
 
@@ -259,8 +301,8 @@ func _build_curved_surface(chunk: Node3D, points: Array[Vector3]) -> void:
 		var to := points[segment_index + 1]
 		var direction := to - from
 		var distance := direction.length()
-		var yaw := atan2(direction.x, direction.z)
-		var rotation := Basis.from_euler(Vector3(0.0, yaw, 0.0))
+		var rotation := _road_basis(direction)
+		var surface_normal := rotation.y
 		var center := (from + to) * 0.5
 		var shoulder_basis := (
 			rotation
@@ -270,8 +312,8 @@ func _build_curved_surface(chunk: Node3D, points: Array[Vector3]) -> void:
 			rotation
 			* Basis.from_scale(Vector3(ROAD_WIDTH, 0.055, distance + 0.60))
 		)
-		shoulder_transforms.append(Transform3D(shoulder_basis, center + Vector3.UP * 0.002))
-		road_transforms.append(Transform3D(road_basis, center + Vector3.UP * 0.040))
+		shoulder_transforms.append(Transform3D(shoulder_basis, center + surface_normal * 0.002))
+		road_transforms.append(Transform3D(road_basis, center + surface_normal * 0.040))
 	_add_multimesh(chunk, "GravelShoulder", _unit_box_mesh, _shoulder_material, shoulder_transforms, false, 260.0)
 	_add_multimesh(chunk, "RoadSurface", _unit_box_mesh, _road_material, road_transforms, false, 260.0)
 
@@ -284,20 +326,30 @@ func _build_markings(chunk: Node3D, points: Array[Vector3]) -> void:
 		var from := points[segment_index]
 		var to := points[segment_index + 1]
 		var direction := (to - from).normalized()
-		var perpendicular := Vector3(direction.z, 0.0, -direction.x)
-		var yaw := atan2(direction.x, direction.z)
-		var basis := Basis.from_euler(Vector3(0.0, yaw, 0.0))
+		var basis := _road_basis(direction)
+		var perpendicular := basis.x
+		var surface_normal := basis.y
 		var unit_count := maxi(1, int(ceil(from.distance_to(to) / 2.35)))
 		for unit_index in unit_count:
 			var t := (float(unit_index) + 0.5) / float(unit_count)
 			var centerline: Vector3 = from.lerp(to, t)
 			for side in [-1.0, 1.0]:
-				var edge_position: Vector3 = centerline + perpendicular * ROAD_WIDTH * 0.43 * float(side) + Vector3.UP * 0.084
+				var edge_position: Vector3 = (
+					centerline
+					+ perpendicular * ROAD_WIDTH * 0.43 * float(side)
+					+ surface_normal * 0.084
+				)
 				marking_transforms.append(Transform3D(basis, edge_position))
 			if marking_index % 2 == 0:
-				marking_transforms.append(Transform3D(basis, centerline + Vector3.UP * 0.085))
+				marking_transforms.append(
+					Transform3D(basis, centerline + surface_normal * 0.085)
+				)
 				for side in [-1.0, 1.0]:
-					var reflector_position: Vector3 = centerline + perpendicular * ROAD_WIDTH * 0.43 * float(side) + Vector3.UP * 0.115
+					var reflector_position: Vector3 = (
+						centerline
+						+ perpendicular * ROAD_WIDTH * 0.43 * float(side)
+						+ surface_normal * 0.115
+					)
 					reflector_transforms.append(Transform3D(basis, reflector_position))
 			marking_index += 1
 
@@ -484,18 +536,22 @@ func _closest_point_on_record(position_3d: Vector3, record: Dictionary) -> Dicti
 	for segment_index in points.size() - 1:
 		var from := points[segment_index]
 		var to := points[segment_index + 1]
-		var segment := to - from
+		var flat_from := Vector3(from.x, 0.0, from.z)
+		var flat_to := Vector3(to.x, 0.0, to.z)
+		var flat_segment := flat_to - flat_from
 		var t := clampf(
-			(flat_position - from).dot(segment) / maxf(segment.length_squared(), 0.001),
+			(flat_position - flat_from).dot(flat_segment)
+			/ maxf(flat_segment.length_squared(), 0.001),
 			0.0,
 			1.0
 		)
-		var candidate := from + segment * t
-		var distance_squared := flat_position.distance_squared_to(candidate)
+		var candidate := from.lerp(to, t)
+		var flat_candidate := Vector3(candidate.x, 0.0, candidate.z)
+		var distance_squared := flat_position.distance_squared_to(flat_candidate)
 		if distance_squared < closest_distance_squared:
 			closest_distance_squared = distance_squared
 			closest_position = candidate
-			closest_direction = segment.normalized()
+			closest_direction = (to - from).normalized()
 			closest_segment_index = segment_index
 			closest_t = t
 	return {
